@@ -352,12 +352,13 @@ export class PikPakWebSession {
    * 等待 PikPak 服务端把 OSS 对象检入为完成。
    *
    * 注意：OSS multipartUpload 成功只代表“数据已经到对象存储”，不代表 PikPak 元数据一定
-   * 已经同步完成。2026-08-29 还观察到过 1 MiB 文件在 15 秒内保持 PENDING，因此这里默认
-   * 给 60 秒，而不是把 progress=0 立即当作上传失败。
+   * 已经同步完成。2026-08-29/30 观察到过：1 MiB 在 15 秒内保持 PENDING，Node 原生
+   * 8 MiB 上传后 check-in 约 61 秒才 COMPLETE。因此这里默认给 180 秒，而不是把
+   * progress=0 立即当作上传失败。
    */
   async waitTaskComplete(
     taskId,
-    { timeoutMs = 60_000, intervalMs = 500 } = {},
+    { timeoutMs = 180_000, intervalMs = 500 } = {},
   ) {
     const started = Date.now();
     let polls = 0;
