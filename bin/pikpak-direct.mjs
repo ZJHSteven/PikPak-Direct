@@ -48,7 +48,7 @@ function printHelp() {
   --name <remote-name>            PikPak 文件名，默认使用本地 basename。
   --parent-id <id>                PikPak 目标父目录 id，默认根目录。
   --parallel <n>                  multipart 并发，默认 4，范围 1~32。
-  --checkin-timeout-sec <n>       OSS 上传后等待 PikPak 检入，默认 60 秒。
+  --checkin-timeout-sec <n>       OSS 上传后等待 PikPak 检入，默认 180 秒。
   --cdp <url>                     Chrome DevTools 地址，默认 ${DEFAULT_CDP_URL}。
   --trash-after-success           成功并检入后立刻移入回收站，仅建议 smoke test。
   -h, --help                      显示帮助。
@@ -83,7 +83,7 @@ function parseArgs(argv) {
     remoteName: null,
     parentId: '',
     parallel: 4,
-    checkInTimeoutSec: 60,
+    checkInTimeoutSec: 180,
     cdpUrl: DEFAULT_CDP_URL,
     trashAfterSuccess: false,
   };
