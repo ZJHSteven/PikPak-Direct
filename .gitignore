@@ -1,0 +1,27 @@
+# Node / tooling
+node_modules/
+
+# 本项目的运行时输出。正式 manifest 未来会放入明确的用户数据目录，默认不进 Git。
+.tmp/
+tmp/
+logs/
+*.log
+*.har
+
+# 任何可能包含真实 PikPak/STS/HTTP 授权信息的抓包或响应转储都禁止提交。
+secrets/
+credentials/
+*.secret.json
+*.tokens.json
+*.cookies.json
+*auth*.json
+*sts*.json
+
+# 网络/浏览器调试临时产物
+fixtures/private/
+artifacts/private/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/settings.json
