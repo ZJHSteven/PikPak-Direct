@@ -85,16 +85,81 @@ PikPak-Direct/
 └─ test/                      单元测试
 ```
 
+## 快速使用：当前单文件 CLI MVP
+
+前提：
+
+1. 当前 CDP Chrome（默认 `127.0.0.1:9222`）已经登录 PikPak Web；
+2. 当前网络规则能让 `*.aliyuncs.com` 走 DIRECT；
+3. Node.js >= 22。
+
+安装依赖：
+
+```bash
+npm install
+```
+
+上传一个真实本地文件：
+
+```bash
+node bin/pikpak-direct.mjs upload "D:\\Archive\\example.zip"
+```
+
+默认行为：
+
+- `direct-only`；
+- 从 PikPak upload CNAME 通过 AliDNS / Cloudflare / Google DoH 共识自动发现 Aliyun region；
+- Node 直接从本地文件系统读取文件并 multipart 上传；
+- 不修改 Mihomo；
+- PikPak check-in 最长默认等待 180 秒；
+- 成功后保留云端文件；
+- 不删除本地源文件。
+
+人工指定 region：
+
+```bash
+node bin/pikpak-direct.mjs upload "D:\\Archive\\example.zip" --region ap-southeast-1
+```
+
+A/B 或故障回退才使用 server endpoint：
+
+```bash
+node bin/pikpak-direct.mjs upload "D:\\Archive\\example.zip" --route server
+```
+
+> `server` 路径可能让 TB 级正文重新命中 PikPak 代理规则，因此不应作为用户当前 200GB/月代理配额环境的默认模式。
+
+运行回归探针：
+
+```bash
+npm run probe:web-upload -- --route direct --region ap-southeast-1 --size-mib 8
+```
+
+该探针生成随机测试数据，并在成功/失败后尝试清理自己创建的测试文件。
+
 ## 当前阶段
 
-目前处于 **阶段 1：把已验证实验固化成可复现项目**。
+阶段 1“实验固化”已经完成，正在进行 **阶段 2：正式 CLI MVP**。
 
-短期目标：
+已经具备：
 
-1. 动态判断 Aliyun region，而不是硬编码新加坡；
-2. 提供安全的 endpoint normalization 模块；
-3. 整理官方 Web 上传探针；
-4. 建立单元测试；
-5. 再进入正式文件/目录 CLI 与冷仓迁移器。
+1. 单真实文件上传；
+2. 流式 SHA-1；
+3. PikPak Web 控制面 task create/check-in；
+4. 多 DoH 共识自动发现 region；
+5. Node `ali-oss` 原生 multipart；
+6. secret 默认脱敏；
+7. 24 个离线单元测试；
+8. 真实 8 MiB Node CLI smoke test 完整成功。
+
+尚未完成：
+
+- 目录递归与远端目录创建；
+- 持久 manifest；
+- 持久 multipart checkpoint / pause / resume；
+- STS 超过约 12 小时后的可靠换证；
+- 冷仓扫描、校验和本地观察期删除流程。
+
+此外，当前 PikPak Web 前端对桌面文件有 20GiB UI 限制，但 create-task 后端已实测接受 21GiB 与 100GiB 声明任务；这不等于 100GiB+ 单文件已获得长期稳定支持，因为 STS 生命周期仍需解决。
 
 实时状态请看 [`PROGRESS.md`](./PROGRESS.md)。
