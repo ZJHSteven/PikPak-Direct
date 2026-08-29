@@ -7,6 +7,8 @@
 - 已验证：`node bin/pikpak-direct.mjs upload <file>` 可从真实本地路径读取文件，自动发现 `ap-southeast-1`，正文走原生 Aliyun OSS endpoint，PikPak 最终 `PHASE_TYPE_COMPLETE`；8 MiB smoke test 已两次成功并清理远端测试文件。
 - 正在做：把 CLI 从“单文件可用”推进到长期冷仓工具所需的 manifest、目录递归、checkpoint/恢复和大文件 STS 生命周期管理。
 - 下一步：先加入持久 manifest 与可恢复状态目录；随后研究 STS 续证/超时预警，再做目录/冷仓迁移器。
+- 本轮最终自检：24/24 单元测试通过；`npm audit` 0 vulnerabilities；Git working tree clean；Mihomo runtime=`rule`；无残留临时 Mihomo probe 配置。
+- 当前可用命令：`node bin/pikpak-direct.mjs upload "<local-file>"`，默认 direct-only + CNAME/DoH 自动 region 发现；真实 8MiB smoke test 已验证。
 
 ## 关键决策与理由（防止“吃书”）
 
