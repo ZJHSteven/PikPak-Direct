@@ -1,0 +1,329 @@
+#!/usr/bin/env node
+
+// PikPak-Direct 第一版真实文件 CLI。
+//
+// 目前只实现一个最重要命令：
+//
+//   pikpak-direct upload <local-file> --region ap-southeast-1
+//
+// 流程：
+//   1. 流式 SHA-1 读取本地文件；
+//   2. 通过已登录 PikPak Web/CDP 创建 resumable task；
+//   3. 从 PikPak task 中取得短生命周期 Aliyun STS；
+//   4. 把自定义 PikPak OSS CNAME 安全规范化为原生 Aliyun OSS endpoint；
+//   5. Node 直接 multipartUpload 本地文件路径；
+//   6. 轮询 PikPak task，确认 progress=100 / COMPLETE；
+//   7. 输出不含 secret 的结果清单。
+//
+// 安全默认：
+// - route 默认 direct-only；无法确认 region 时拒绝上传，不静默走代理正文；
+// - 不修改 Mihomo 全局 mode / 配置；
+// - 成功文件默认保留；
+// - 失败/超时默认也不自动删除远端 placeholder，避免把“最终一致性延迟”误当失败后误删；
+// - 只有显式 --trash-after-success 才在成功后把本次文件移入 PikPak 回收站，主要用于 smoke test。
+
+import { basename, resolve } from 'node:path';
+import process from 'node:process';
+import { stat } from 'node:fs/promises';
+
+import { sha1File } from '../src/file-hash.mjs';
+import { uploadFileToPikPakOss } from '../src/oss-uploader.mjs';
+import { isSafeAliyunRegion } from '../src/aliyun-endpoint.mjs';
+import { PikPakWebSession } from '../src/pikpak-web-session.mjs';
+
+const DEFAULT_CDP_URL = 'http://127.0.0.1:9222';
+
+function printHelp() {
+  console.log(`PikPak-Direct
+
+用法：
+  pikpak-direct upload <local-file> --region ap-southeast-1
+
+示例：
+  node bin/pikpak-direct.mjs upload "D:\\Archive\\example.zip" --region ap-southeast-1
+
+参数：
+  --region <region>               Aliyun region，例如 ap-southeast-1。direct-only 当前必填。
+  --route <policy>                direct-only | prefer-direct | server，默认 direct-only。
+  --name <remote-name>            PikPak 文件名，默认使用本地 basename。
+  --parent-id <id>                PikPak 目标父目录 id，默认根目录。
+  --parallel <n>                  multipart 并发，默认 4，范围 1~32。
+  --checkin-timeout-sec <n>       OSS 上传后等待 PikPak 检入，默认 60 秒。
+  --cdp <url>                     Chrome DevTools 地址，默认 ${DEFAULT_CDP_URL}。
+  --trash-after-success           成功并检入后立刻移入回收站，仅建议 smoke test。
+  -h, --help                      显示帮助。
+
+重要：
+  - 本工具不会切换 Mihomo 全局 mode。
+  - direct-only 无法确定/验证 endpoint 时会失败，不会偷偷把 TB 正文走代理。
+  - 当前控制面依赖已登录的 PikPak Web 标签页与 2026-08-29 已验证的 Web 前端模块。
+`);
+}
+
+function parseArgs(argv) {
+  if (argv.length === 0 || argv.includes('--help') || argv.includes('-h')) {
+    return { help: true };
+  }
+
+  const command = argv[0];
+  if (command !== 'upload') {
+    throw new Error(`当前只支持 upload 命令，收到: ${command}`);
+  }
+
+  const localFile = argv[1];
+  if (!localFile || localFile.startsWith('--')) {
+    throw new Error('upload 命令必须提供本地文件路径。');
+  }
+
+  const args = {
+    command,
+    localFile,
+    region: null,
+    route: 'direct-only',
+    remoteName: null,
+    parentId: '',
+    parallel: 4,
+    checkInTimeoutSec: 60,
+    cdpUrl: DEFAULT_CDP_URL,
+    trashAfterSuccess: false,
+  };
+
+  for (let index = 2; index < argv.length; index += 1) {
+    const flag = argv[index];
+    const value = argv[index + 1];
+
+    if (flag === '--region') {
+      args.region = value;
+      index += 1;
+    } else if (flag === '--route') {
+      args.route = value;
+      index += 1;
+    } else if (flag === '--name') {
+      args.remoteName = value;
+      index += 1;
+    } else if (flag === '--parent-id') {
+      args.parentId = value || '';
+      index += 1;
+    } else if (flag === '--parallel') {
+      args.parallel = Number(value);
+      index += 1;
+    } else if (flag === '--checkin-timeout-sec') {
+      args.checkInTimeoutSec = Number(value);
+      index += 1;
+    } else if (flag === '--cdp') {
+      args.cdpUrl = value;
+      index += 1;
+    } else if (flag === '--trash-after-success') {
+      args.trashAfterSuccess = true;
+    } else {
+      throw new Error(`未知参数: ${flag}`);
+    }
+  }
+
+  return args;
+}
+
+function validateArgs(args) {
+  if (!['direct-only', 'prefer-direct', 'server'].includes(args.route)) {
+    throw new Error('--route 只能是 direct-only、prefer-direct 或 server。');
+  }
+
+  if (args.route === 'direct-only' && !isSafeAliyunRegion(args.region)) {
+    throw new Error('direct-only 当前必须显式提供安全的 --region，例如 ap-southeast-1。');
+  }
+
+  if (args.region && !isSafeAliyunRegion(args.region)) {
+    throw new Error(`无效 Aliyun region: ${args.region}`);
+  }
+
+  if (!Number.isInteger(args.parallel) || args.parallel < 1 || args.parallel > 32) {
+    throw new Error('--parallel 必须是 1~32 的整数。');
+  }
+
+  if (!Number.isFinite(args.checkInTimeoutSec) || args.checkInTimeoutSec < 1 || args.checkInTimeoutSec > 3600) {
+    throw new Error('--checkin-timeout-sec 必须是 1~3600 秒。');
+  }
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value)) return 'unknown';
+
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let number = value;
+  let index = 0;
+
+  while (number >= 1024 && index < units.length - 1) {
+    number /= 1024;
+    index += 1;
+  }
+
+  return `${number.toFixed(index === 0 ? 0 : 2)} ${units[index]}`;
+}
+
+function formatDuration(ms) {
+  const seconds = Number(ms) / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  return `${(seconds / 60).toFixed(1)}min`;
+}
+
+async function uploadCommand(args) {
+  const filePath = resolve(args.localFile);
+  const fileStat = await stat(filePath);
+
+  if (!fileStat.isFile()) {
+    throw new Error(`当前 MVP 只支持单个普通文件，不支持目录: ${filePath}`);
+  }
+
+  const remoteName = args.remoteName || basename(filePath);
+
+  console.log(`[1/5] 本地文件: ${filePath}`);
+  console.log(`      大小: ${formatBytes(fileStat.size)}`);
+  console.log(`      远端文件名: ${remoteName}`);
+  console.log(`      数据路由策略: ${args.route}${args.region ? ` / region=${args.region}` : ''}`);
+
+  // SHA-1 是纯本地读盘，不产生网络流量。为避免刷屏，每读取约 5% 才更新一次提示。
+  console.log('[2/5] 计算 SHA-1（流式，不把整个文件读入内存）...');
+  let lastHashProgressBucket = -1;
+  const sha1Started = Date.now();
+
+  const sha1 = await sha1File(filePath, {
+    onProgress({ bytesRead }) {
+      if (fileStat.size <= 0) return;
+      const percent = Math.min(100, (bytesRead / fileStat.size) * 100);
+      const bucket = Math.floor(percent / 5);
+      if (bucket !== lastHashProgressBucket) {
+        lastHashProgressBucket = bucket;
+        process.stderr.write(`\r      hash ${percent.toFixed(1)}%`);
+      }
+    },
+  });
+
+  if (fileStat.size > 0) process.stderr.write('\r      hash 100.0%\n');
+  console.log(`      SHA-1 完成，用时 ${formatDuration(Date.now() - sha1Started)}`);
+
+  console.log('[3/5] 连接已登录 PikPak Web，创建 resumable upload task...');
+  const web = await PikPakWebSession.connect({ cdpUrl: args.cdpUrl });
+  let uploadSession = null;
+
+  try {
+    uploadSession = await web.createResumableUpload({
+      name: remoteName,
+      size: fileStat.size,
+      sha1,
+      parentId: args.parentId,
+    });
+
+    // console.log(session) 会自动脱敏；这里仍只主动输出最需要的非敏感字段。
+    console.log(`      provider: ${uploadSession.provider}`);
+    console.log(`      server endpoint: ${uploadSession.serverEndpoint}`);
+    console.log(`      bucket: ${uploadSession.bucket}`);
+    console.log(`      fileId: ${uploadSession.fileId}`);
+    console.log(`      taskId: ${uploadSession.taskId}`);
+
+    console.log('[4/5] Node -> Aliyun OSS multipart upload...');
+    let lastUploadBucket = -1;
+
+    const ossResult = await uploadFileToPikPakOss({
+      session: uploadSession,
+      filePath,
+      fileSize: fileStat.size,
+      regionHint: args.region,
+      policy: args.route,
+      parallel: args.parallel,
+      onProgress(state) {
+        const percent = Math.min(100, Number(state.percentage || 0) * 100);
+        const bucket = Math.floor(percent / 2);
+        if (bucket !== lastUploadBucket) {
+          lastUploadBucket = bucket;
+          process.stderr.write(
+            `\r      upload ${percent.toFixed(1)}%  `
+            + `${formatBytes(state.uploadedBytesApprox)} / ${formatBytes(fileStat.size)}`,
+          );
+        }
+      },
+    });
+
+    process.stderr.write('\r      upload 100.0%'.padEnd(78) + '\n');
+    console.log(`      effective endpoint: ${ossResult.effectiveEndpoint}`);
+    console.log(`      route: ${ossResult.route}`);
+    console.log(`      partSize: ${formatBytes(ossResult.partSize)}, parallel=${ossResult.parallel}`);
+    console.log(`      OSS 用时: ${formatDuration(ossResult.elapsedMs)}`);
+
+    console.log('[5/5] 等待 PikPak 服务端 check-in...');
+    const checkIn = await web.waitTaskComplete(uploadSession.taskId, {
+      timeoutMs: args.checkInTimeoutSec * 1000,
+      intervalMs: 500,
+    });
+
+    const finalResult = {
+      ok: Boolean(checkIn.allDone),
+      localPath: filePath,
+      localSize: fileStat.size,
+      localSha1: sha1,
+      remoteName,
+      fileId: uploadSession.fileId,
+      taskId: uploadSession.taskId,
+      provider: uploadSession.provider,
+      serverEndpoint: ossResult.serverEndpoint,
+      effectiveEndpoint: ossResult.effectiveEndpoint,
+      dataRoute: ossResult.route,
+      partSize: ossResult.partSize,
+      parallel: ossResult.parallel,
+      ossElapsedMs: ossResult.elapsedMs,
+      checkIn,
+    };
+
+    if (!checkIn.allDone) {
+      console.error(
+        '      PikPak 尚未在等待窗口内完成检入。文件/任务不会自动删除；'
+        + '请保留 fileId/taskId 后续检查，避免把最终一致性延迟误判成失败。',
+      );
+      console.log(JSON.stringify(finalResult, null, 2));
+      process.exitCode = 3;
+      return;
+    }
+
+    console.log(`      COMPLETE，轮询 ${checkIn.polls} 次，用时 ${formatDuration(checkIn.elapsedMs)}`);
+
+    if (args.trashAfterSuccess) {
+      console.log('      --trash-after-success 已启用：把本次成功文件移入 PikPak 回收站。');
+      await web.trashFile(uploadSession.fileId);
+      finalResult.trashedAfterSuccess = true;
+    }
+
+    console.log('\n上传结果（无 secret）：');
+    console.log(JSON.stringify(finalResult, null, 2));
+  } catch (error) {
+    // 实际上传失败时不自动 trash：部分网络错误可能发生在 OSS 已完成、PikPak 尚未同步阶段。
+    // 如果已经拿到 file/task id，就把它们给用户/上层恢复流程，而不是武断删除。
+    if (uploadSession) {
+      console.error(`      已创建远端 fileId=${uploadSession.fileId} taskId=${uploadSession.taskId}`);
+      console.error('      为避免误删，CLI 不自动清理该任务。');
+    }
+    throw error;
+  } finally {
+    web.close();
+  }
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  if (args.help) {
+    printHelp();
+    return;
+  }
+
+  validateArgs(args);
+
+  if (args.command === 'upload') {
+    await uploadCommand(args);
+  }
+}
+
+main().catch((error) => {
+  // 这里只输出 error.message，不 dump error/cause/client，避免底层 SDK 把 client options 或
+  // STS 信息间接打印出来。需要深入诊断时应另做显式脱敏的 debug 模式。
+  console.error(`[pikpak-direct] ${error.message}`);
+  process.exitCode = 1;
+});
