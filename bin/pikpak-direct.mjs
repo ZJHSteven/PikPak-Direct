@@ -30,6 +30,7 @@ import { sha1File } from '../src/file-hash.mjs';
 import { uploadFileToPikPakOss } from '../src/oss-uploader.mjs';
 import { isSafeAliyunRegion } from '../src/aliyun-endpoint.mjs';
 import { PikPakWebSession } from '../src/pikpak-web-session.mjs';
+import { discoverAliyunRegion } from '../src/region-discovery.mjs';
 
 const DEFAULT_CDP_URL = 'http://127.0.0.1:9222';
 
@@ -37,13 +38,14 @@ function printHelp() {
   console.log(`PikPak-Direct
 
 用法：
-  pikpak-direct upload <local-file> --region ap-southeast-1
+  pikpak-direct upload <local-file>
 
 示例：
+  node bin/pikpak-direct.mjs upload "D:\\Archive\\example.zip"
   node bin/pikpak-direct.mjs upload "D:\\Archive\\example.zip" --region ap-southeast-1
 
 参数：
-  --region <region>               Aliyun region，例如 ap-southeast-1。direct-only 当前必填。
+  --region <region>               可选人工 override；省略时通过多家 DoH CNAME 共识自动发现。
   --route <policy>                direct-only | prefer-direct | server，默认 direct-only。
   --name <remote-name>            PikPak 文件名，默认使用本地 basename。
   --parent-id <id>                PikPak 目标父目录 id，默认根目录。
@@ -126,10 +128,6 @@ function parseArgs(argv) {
 function validateArgs(args) {
   if (!['direct-only', 'prefer-direct', 'server'].includes(args.route)) {
     throw new Error('--route 只能是 direct-only、prefer-direct 或 server。');
-  }
-
-  if (args.route === 'direct-only' && !isSafeAliyunRegion(args.region)) {
-    throw new Error('direct-only 当前必须显式提供安全的 --region，例如 ap-southeast-1。');
   }
 
   if (args.region && !isSafeAliyunRegion(args.region)) {
@@ -221,6 +219,35 @@ async function uploadCommand(args) {
     console.log(`      fileId: ${uploadSession.fileId}`);
     console.log(`      taskId: ${uploadSession.taskId}`);
 
+    // direct 路线优先自动从 PikPak upload CNAME 发现 region。
+    // 当前已观察到 CNAME 形如：bucket.region.thepacificphs.com。
+    // discoverAliyunRegion 默认要求多家 DoH 共识，并校验 CNAME bucket 与 task bucket 一致。
+    let resolvedRegion = args.region;
+    if (args.route !== 'server' && !resolvedRegion) {
+      console.log('      自动发现 Aliyun region（多家 DoH CNAME 共识）...');
+      const discovery = await discoverAliyunRegion({
+        serverEndpoint: uploadSession.serverEndpoint,
+        expectedBucket: uploadSession.bucket,
+      });
+
+      if (discovery.ok) {
+        resolvedRegion = discovery.region;
+        console.log(
+          `      region: ${resolvedRegion} `
+          + `(source=${discovery.source}, consensus=${discovery.consensus})`,
+        );
+      } else if (args.route === 'direct-only') {
+        throw new Error(`无法自动确定 Aliyun region：${discovery.reason}`);
+      } else {
+        console.warn(
+          `      [warn] 无法自动确定 Aliyun region：${discovery.reason}；`
+          + 'prefer-direct 将允许 uploader 回退 server endpoint。',
+        );
+      }
+    } else if (resolvedRegion) {
+      console.log(`      region: ${resolvedRegion} (manual override)`);
+    }
+
     console.log('[4/5] Node -> Aliyun OSS multipart upload...');
     let lastUploadBucket = -1;
 
@@ -228,7 +255,7 @@ async function uploadCommand(args) {
       session: uploadSession,
       filePath,
       fileSize: fileStat.size,
-      regionHint: args.region,
+      regionHint: resolvedRegion,
       policy: args.route,
       parallel: args.parallel,
       onProgress(state) {
