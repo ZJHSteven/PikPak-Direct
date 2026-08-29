@@ -1,0 +1,14 @@
+{
+  "name": "pikpak-direct",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "PikPak control-plane proxy + Aliyun OSS data-plane DIRECT uploader experiments and cold archive tooling.",
+  "scripts": {
+    "test": "node --test",
+    "probe:web-upload": "node tools/web-upload-probe.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
