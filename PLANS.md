@@ -25,27 +25,32 @@
 - 上传完成后 PikPak task 轮询达到 `progress=100`、`phase=PHASE_TYPE_COMPLETE`，证明完整闭环成立。
 - 32 MiB A/B：原自定义 endpoint 经代理约 14.45 Mbps；标准 OSS endpoint 经 DIRECT 约 27.72 Mbps。该数值仅视为当次样本，不视为固定带宽。
 
-## 阶段 1：项目骨架与实验固化（本轮）
+## 阶段 1：项目骨架与实验固化（已完成）
 
-- [ ] 建立项目级 `AGENTS.md`，写入网络安全边界与凭据规范。
-- [ ] 建立 `PROGRESS.md`。
-- [ ] 建立 `README.md`，解释项目用途、架构和当前状态。
-- [ ] 建立 `docs/architecture.md`。
-- [ ] 建立 `docs/experiments/2026-08-29-direct-upload.md`，记录本轮完整实验。
-- [ ] 把 `_scratch` 中有价值的上传探针整理成项目内可复现工具，去除硬编码与敏感输出。
-- [ ] 建立最小测试，覆盖 endpoint 解析/改写逻辑。
-- [ ] 运行语法与单元测试。
+- [x] 建立项目级 `AGENTS.md`，写入网络安全边界与凭据规范。
+- [x] 建立 `PROGRESS.md`。
+- [x] 建立 `README.md`，解释项目用途、架构和当前状态。
+- [x] 建立 `docs/architecture.md`。
+- [x] 建立 `docs/experiments/2026-08-29-direct-upload.md`，记录 WebDAV、Web OSS、Node OSS、region 与大文件实验。
+- [x] 把 `_scratch` 中有价值的上传探针整理成项目内 `tools/web-upload-probe.mjs`，去除敏感输出。
+- [x] 建立 endpoint、region discovery、part size、STS 脱敏等单元测试。
+- [x] 运行语法与单元测试；当前 24 tests 全绿。
+- [x] 真实运行 Node CLI 8 MiB 本地文件，Direct OSS + PikPak check-in 完整成功并清理测试文件。
 
-## 阶段 2：正式 CLI MVP
+## 阶段 2：正式 CLI MVP（进行中）
 
-- [ ] CLI 接受本地文件/目录。
-- [ ] 使用受控浏览器登录态或未来官方登录方式获取控制面认证。
-- [ ] 创建 PikPak resumable upload task。
-- [ ] 根据 `provider`、bucket、server endpoint 动态推导原生 OSS endpoint。
-- [ ] multipart 上传正文。
-- [ ] 轮询 PikPak task 至 complete / error / timeout。
-- [ ] 输出 manifest：本地 path、size、mtime、远端 file id、task id、完成状态；不记录任何 secret。
-- [ ] 支持 pause/resume/checkpoint。
+- [x] CLI 接受单个本地文件；目录递归尚未实现。
+- [x] 使用受控浏览器登录态获取控制面认证，STS 只保留在 Node 内存并默认脱敏。
+- [x] 创建 PikPak resumable upload task。
+- [x] 根据 provider、bucket、CNAME 多 DoH 共识动态推导原生 OSS region/endpoint；`--region` 保留人工 override。
+- [x] Node `ali-oss` multipart 上传真实本地文件路径。
+- [x] 轮询 PikPak task 至 complete / error / timeout，默认等待 180 秒；timeout 不误删任务。
+- [x] CLI 输出不含 secret 的本地 path、size、SHA-1、远端 file id、task id、endpoint、完成状态。
+- [ ] 把结果写成持久 manifest 文件，并设计可恢复状态目录。
+- [ ] 支持目录递归、远端目录创建与冲突策略。
+- [ ] 支持持久 checkpoint / pause / resume。
+- [ ] 研究并验证 STS 换证：当前 STS 约 12h；相同 fileId 立即 recreate 不刷新 expiration；需验证临近/超过 expiry 后行为或寻找专门刷新 API。
+- [ ] 在 STS 换证完成前，对预计传输时长可能超过 token TTL 的单文件给出安全预警/拒绝策略。
 
 ## 阶段 3：冷仓迁移器
 
