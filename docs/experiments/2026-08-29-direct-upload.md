@@ -266,7 +266,103 @@ Aliyun OSS data plane -> direct
 
 实验创建的测试 file/task 均通过 PikPak API 清理；文档与脚本不保留真实 STS secret、Cookie、token。
 
-## 10. 结论
+## 10. Node 原生文件 CLI 实验（2026-08-30 追加）
+
+在网页内 Aliyun SDK 探针成功后，又实现了 Node 侧 `ali-oss` uploader：
+
+```text
+本地文件路径
+  ↓ Node 流式 SHA-1
+PikPak Web 控制面创建 task
+  ↓ 短生命周期 STS（只在进程内存）
+Node ali-oss multipartUpload(localPath)
+  ↓ 原生 aliyuncs endpoint / DIRECT
+PikPak task check-in
+```
+
+### 10.1 8 MiB 真实本地文件
+
+测试文件位于项目 `.tmp/`，被 `.gitignore` 排除；成功后使用显式
+`--trash-after-success` 清理 PikPak 测试文件。
+
+第一次 Node 原生实验：
+
+```text
+local size       = 8 MiB
+partSize         = 5 MiB
+parallel         = 4
+OSS elapsed      ≈ 4.5 s
+PikPak check-in  ≈ 61 s
+final progress   = 100
+phase            = PHASE_TYPE_COMPLETE
+```
+
+这个样本暴露出一个重要边界：**OSS object 完成与 PikPak 元数据检入可能相差约一分钟。**
+因此正式 CLI 的默认 check-in timeout 已从 60 秒提高为 180 秒；timeout 时不自动删除任务。
+
+### 10.2 自动 region 发现
+
+对 `upload-a10b.mypikpak.com` 查询 CNAME，AliDNS、Cloudflare、Google 三家 DoH 均一致返回：
+
+```text
+vip-lixian-07.ap-southeast-1.thepacificphs.com
+```
+
+其中同时包含：
+
+```text
+bucket = vip-lixian-07
+region = ap-southeast-1
+```
+
+因此实现了自动发现策略：
+
+- 多家 DoH 查询 CNAME；
+- 至少两家对同一 region 达成一致；
+- CNAME 中 bucket 必须与 PikPak task 返回 bucket 完全一致；
+- 冲突或证据不足时 `direct-only` 拒绝猜测。
+
+随后不传 `--region` 再跑 8 MiB Node CLI：
+
+```text
+region source    = doh-cname-consensus
+consensus        = 3
+OSS elapsed      ≈ 4.1 s
+PikPak check-in  ≈ 20.6 s
+final            = COMPLETE
+```
+
+说明“自动 region -> Node Direct upload -> PikPak complete”完整闭环已成立。
+
+## 11. 单文件大小与 STS 有效期实验
+
+当前 Web bundle 中定位到前端文件大小限制：
+
+```text
+桌面 Web：> 20 GiB -> 前端标记 UPLOAD_TASK_FAILED
+移动 Web：> 4 GiB  -> 前端标记 UPLOAD_TASK_FAILED
+```
+
+其中单位常量为 `1024^3`，因此是 GiB 量级，不是十进制 GB。
+
+为判断这是否是后端硬限制，进行了“只创建 task、不上传正文、随后立即清理”的实验：
+
+```text
+声明 21 GiB  -> create resumable task 成功
+声明 100 GiB -> create resumable task 成功
+```
+
+说明至少当前 create-task 后端没有复刻 Web UI 的 20GiB 限制；Node CLI 理论上可以突破前端限制。
+
+但两次 task 返回的 STS `expiration` 均约为**创建后 12 小时**。
+
+这意味着：
+
+- Web UI 的 20GiB 限制可能部分规避了超长上传与 STS 生命周期问题；
+- Node CLI 若支持 100GiB 以上乃至 TB 级单文件，必须设计 STS refresh / credential renewal；
+- 在换证机制验证前，不应声称“任意 TB 单文件稳定支持”。
+
+## 12. 结论
 
 当前账号/当前 PikPak Web 实现下，以下架构已经被完整验证：
 
