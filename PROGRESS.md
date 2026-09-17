@@ -9,6 +9,8 @@
 - 下一步：先加入持久 manifest 与可恢复状态目录；随后研究 STS 续证/超时预警，再做目录/冷仓迁移器。
 - 本轮最终自检：24/24 单元测试通过；`npm audit` 0 vulnerabilities；Git working tree clean；Mihomo runtime=`rule`；无残留临时 Mihomo probe 配置。
 - 当前可用命令：`node bin/pikpak-direct.mjs upload "<local-file>"`，默认 direct-only + CNAME/DoH 自动 region 发现；真实 8MiB smoke test 已验证。
+- Windows WebDAV 挂载：`P:` 当前由计划任务 `PikPak Mount` 自动挂载；任务改为 `wscript.exe -> bin/mount-pikpak-hidden.vbs -> rclone mount`，已确认无 Windows Terminal 黑框时 rclone 仍独立运行。
+- 2026-09-18 挂载回归：`P:` 可列目录；测试文件可写入并立即读回；VFS 成功写回；直接 `rclone lsf PikPak:__network_test__` 可在远端看到测试文件；删除后本地消失；最终 `TERMINAL_COUNT=0`。
 
 ## 关键决策与理由（防止“吃书”）
 
@@ -40,3 +42,5 @@
 - 坑4：所有日志/fixture 禁止保存 access token、Cookie、WebDAV password、STS access key secret/security token。
 - 坑5：OSS multipart 完成不等于 PikPak task 立即 COMPLETE；曾出现约 61 秒 check-in 延迟。timeout 时必须保留 fileId/taskId 后续检查，不能自动误删。
 - 坑6：Aliyun SDK 会提示配置 `refreshSTSToken`。当前 PikPak Web adapter 本身没有传 refresh callback；大文件换证仍是待验证能力。
+- 坑7：在 Windows Terminal 被设为默认终端宿主时，计划任务直接启动 `rclone.exe` 即使附加 `--no-console`，仍可能产生常驻空白 Terminal 窗口；而直接结束该 Terminal 还可能把同控制台生命周期内的挂载一起带掉。当前使用 GUI 子系统的 `wscript.exe` 作为隐藏启动器，并让 VBS 等待 rclone 退出，以兼顾“无黑框”和计划任务 Running 状态。
+- 坑8：旧版 Windows Script Host 对无 BOM 的 UTF-8 VBS 源文件兼容差，中文注释可能触发 VBScript 解析错误。`bin/mount-pikpak-hidden.vbs` 因此保持 ASCII-only，详细中文说明保留在本状态文档与执行计划中。
