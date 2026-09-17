@@ -71,9 +71,9 @@
 ## 阶段 5：Windows WebDAV 挂载维护
 
 - [x] 保留 `P:` = PikPak WebDAV 的登录自动挂载能力。
-- [ ] 将计划任务从“直接启动控制台版 rclone”改为隐藏启动器，避免 Windows Terminal 黑框常驻。
-- [ ] 重启挂载后验证：`P:` 可列目录、VFS 写回成功、远端可见、测试文件可删除。
-- [ ] 验证关闭/不存在 Windows Terminal 后 rclone 与 `P:` 仍独立存活。
+- [x] 将计划任务从“直接启动控制台版 rclone”改为 `wscript.exe` 隐藏启动器，避免 Windows Terminal 黑框常驻。
+- [x] 重启挂载后验证：`P:` 可列目录、VFS 写回成功、远端可见、测试文件可删除。
+- [x] 验证不存在 Windows Terminal 时 rclone 与 `P:` 仍独立存活。
 
 ## 明确不做
 
