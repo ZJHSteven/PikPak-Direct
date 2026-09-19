@@ -2,14 +2,16 @@
 
 ## 当前结论（必须最新）
 
-- 现状：阶段 1“项目骨架与实验固化”已完成；阶段 2“正式 CLI MVP”已进入可真实上传单文件状态。
-- 已完成：README/架构/完整实验记录、Web 官方上传探针、Node 本地文件 CLI、Aliyun endpoint 规范化、多 DoH region 自动发现、STS 默认脱敏、24 个单元测试。
+- 现状：阶段 1“项目骨架与实验固化”已完成；阶段 2“正式 CLI MVP”已有 Aliyun OSS 单文件直传；阶段 6“Cloud Download 反向拉取”已完成真实端到端 PoC，正在从手工 PoC 固化为可自动化工具。
+- 已完成：README/架构/实验记录、Web 官方上传探针、Node 本地文件 CLI、Aliyun endpoint 规范化、多 DoH region 自动发现、STS 默认脱敏，以及 Cloud Download 用的受控 localhost 单文件 HTTP 源站。
 - 已验证：`node bin/pikpak-direct.mjs upload <file>` 可从真实本地路径读取文件，自动发现 `ap-southeast-1`，正文走原生 Aliyun OSS endpoint，PikPak 最终 `PHASE_TYPE_COMPLETE`；8 MiB smoke test 已两次成功并清理远端测试文件。
-- 正在做：把 CLI 从“单文件可用”推进到长期冷仓工具所需的 manifest、目录递归、checkpoint/恢复和大文件 STS 生命周期管理。
-- 下一步：先加入持久 manifest 与可恢复状态目录；随后研究 STS 续证/超时预警，再做目录/冷仓迁移器。
-- 本轮最终自检：24/24 单元测试通过；`npm audit` 0 vulnerabilities；Git working tree clean；Mihomo runtime=`rule`；无残留临时 Mihomo probe 配置。
+- 已验证（2026-09-19）：1 MiB 随机文件通过 `127.0.0.1 HTTP -> Cloudflare Quick Tunnel -> PikPak Web Cloud Download -> My Pack` 成功保存；源站实际收到 4 次远端 GET，证明正文由 PikPak/Cloudflare 方向主动回拉。测试文件、Quick Tunnel 与临时 HTTP 服务均已清理。
+- 正在做：把 Cloud Download PoC 从“网页手工提交 URL”推进到可恢复的一键工具；并继续补 manifest、目录/归档、加密和增量快照设计。
+- 下一步：先完成 Quick Tunnel 生命周期与 PikPak Web Cloud Download 控制面的安全自动化；随后加入持久 manifest/SQLite 索引，再做目录流式归档与分块加密。
+- 本轮最终自检：28/28 单元测试通过；Git working tree clean；Cloud Download smoke 远端测试文件已删除；Quick Tunnel/临时 HTTP 已停止；`P:` 不存在且无 rclone 常驻挂载。
 - 当前可用命令：`node bin/pikpak-direct.mjs upload "<local-file>"`，默认 direct-only + CNAME/DoH 自动 region 发现；真实 8MiB smoke test 已验证。
-- Windows WebDAV 挂载：`P:` 当前由计划任务 `PikPak Mount` 自动挂载；任务改为 `wscript.exe -> bin/mount-pikpak-hidden.vbs -> rclone mount`，已确认无 Windows Terminal 黑框时 rclone 仍独立运行。
+- Cloud Download 源站模块：`src/temporary-file-server.mjs` 已实现 loopback-only、256 bit 随机 URL、GET/HEAD/单段 Range、无目录列表和实际发送字节统计；对应测试全绿。
+- Windows WebDAV 挂载：2026-09-19 已按用户决定停用。停用前确认 VFS cache 为 0 个对象、0 B、待上传 0；随后停止 rclone、禁用 `PikPak Mount` 登录计划任务并确认 `P:` 消失。配置保留但不再自启。
 - 2026-09-18 挂载回归：`P:` 可列目录；测试文件可写入并立即读回；VFS 成功写回；直接 `rclone lsf PikPak:__network_test__` 可在远端看到测试文件；删除后本地消失；最终 `TERMINAL_COUNT=0`。
 
 ## 关键决策与理由（防止“吃书”）
@@ -20,6 +22,8 @@
 - 决策D：正式冷迁移默认只上传和校验，不删除本地。原因：冷仓迁移属于高风险数据操作，删除必须在校验完成后另行显式授权。
 - 决策E：region 默认通过多家 DoH 的 CNAME 共识自动发现，而不是硬编码新加坡。当前 CNAME 形如 `bucket.region.thepacificphs.com`，至少两家一致且 bucket 匹配才接受。
 - 决策F：STS 换证尚未验证前，不宣称支持任意 TB 单文件。当前 task STS 约 12h；相同 fileId 立即 recreate 返回同一 task/key/expiration。
+- 决策G：Cloud Download 新路线优先复用 PikPak 官方 Web 控制面，而不是把官方 CLI 作为默认依赖。原因：CLI/WebDAV/Rclone 都属于 Connected Apps，合计受月度 Transfer Quota 的 25% 子限额；Web 属于官方应用，不受该 Connected Apps 子限额。
+- 决策H：临时公网源站必须是“loopback 单文件源站 + 临时 Tunnel”，不能把整个目录、局域网服务或管理端口直接暴露公网。
 
 ## 已验证实验摘要
 
@@ -33,6 +37,7 @@
 - Node 原生 `ali-oss` 8 MiB：OSS 阶段约 4.1~4.5 秒；PikPak check-in 曾分别约 20.6 秒与 61 秒，说明元数据检入存在明显最终一致性延迟。
 - Web 前端明确限制桌面 >20GiB、移动 >4GiB；后端 create-task 实测接受 21GiB 与 100GiB 声明任务，因此 20GiB 至少不是当前 create-task 后端硬限制。
 - 当前 21/100GiB task 下发 STS expiration 约为创建后 12 小时。
+- Cloud Download 反向拉取 1 MiB smoke：公网 HEAD 正常；PikPak 创建任务后本地源站收到 4 次完整 GET；最终文件出现在 `My Pack/smoke-1m.bin`；测试结束后删除并复查不存在。完整记录见 `docs/experiments/2026-09-19-cloud-download-reverse-pull.md`。
 
 ## 常见坑 / 复现方法
 
@@ -44,3 +49,5 @@
 - 坑6：Aliyun SDK 会提示配置 `refreshSTSToken`。当前 PikPak Web adapter 本身没有传 refresh callback；大文件换证仍是待验证能力。
 - 坑7：在 Windows Terminal 被设为默认终端宿主时，计划任务直接启动 `rclone.exe` 即使附加 `--no-console`，仍可能产生常驻空白 Terminal 窗口；而直接结束该 Terminal 还可能把同控制台生命周期内的挂载一起带掉。当前使用 GUI 子系统的 `wscript.exe` 作为隐藏启动器，并让 VBS 等待 rclone 退出，以兼顾“无黑框”和计划任务 Running 状态。
 - 坑8：旧版 Windows Script Host 对无 BOM 的 UTF-8 VBS 源文件兼容差，中文注释可能触发 VBScript 解析错误。`bin/mount-pikpak-hidden.vbs` 因此保持 ASCII-only，详细中文说明保留在本状态文档与执行计划中。
+- 坑9：简单 HTTP 源站在 1 MiB Cloud Download smoke 中观察到 4 次完整 GET；在大文件前必须用正式源站记录 Range/累计发送量，否则重复完整拉取可能放大本机上行流量。
+- 坑10：Cloudflare Quick Tunnel 的自动生命周期封装尚未落盘；当前只把“手工启动 cloudflared + Web 页面提交 URL”的 PoC 视为已验证，不把它写成“一键 CLI 已完成”。
