@@ -74,6 +74,30 @@
 - [x] 将计划任务从“直接启动控制台版 rclone”改为 `wscript.exe` 隐藏启动器，避免 Windows Terminal 黑框常驻。
 - [x] 重启挂载后验证：`P:` 可列目录、VFS 写回成功、远端可见、测试文件可删除。
 - [x] 验证不存在 Windows Terminal 时 rclone 与 `P:` 仍独立存活。
+- [x] 2026-09-19 按用户决定停用该实验性挂载：确认 VFS 缓存无待上传数据后停止 rclone，并禁用 `PikPak Mount` 登录计划任务；配置文件保留，便于未来需要时恢复。
+
+## 阶段 6：Cloud Download 反向拉取 PoC（进行中）
+
+目标：把“本机主动上传到 PikPak”改成“PikPak Cloud Download 主动从本机临时公网入口拉取”，验证能否同时绕开 PikPak 直传上行链路问题与普通 Upload 月配额瓶颈。
+
+第一版严格限定为单文件 PoC：
+
+- [ ] 在现有 `PikPakWebSession` 中增加 `UPLOAD_TYPE_URL` Cloud Download 创建接口，继续复用已登录 PikPak Web 控制面，不引入额外账号密码或长期 token。
+- [ ] 建立只监听 `127.0.0.1` 的临时 HTTP 文件服务；公网路径使用高熵随机 token，不开放目录列表。
+- [ ] HTTP 服务支持 `GET`、`HEAD` 与单段 `Range`，以兼容远端探测、断点和重试。
+- [ ] 使用独立的 Cloudflare Quick Tunnel 暴露该临时 HTTP 服务；不修改现有命名 Tunnel、DNS、Mihomo 或全局网络配置。
+- [ ] 新增 CLI 命令 `cloud-pull <local-file>`：启动 HTTP -> 启动 Tunnel -> 创建 PikPak Cloud Download -> 等待完成 -> 自动关闭 Tunnel/HTTP。
+- [ ] 对失败/超时保留 PikPak task/file 标识并停止公网服务；不自动删除用户已有云端文件。
+- [ ] 使用小文件完成一次真实端到端 smoke test，并在成功后清理本次测试文件。
+- [ ] 把请求次数、实际向 PikPak/Cloudflare 发送的字节数与 task 状态写入脱敏结果，确认是否发生完整拉取、Range 重试或秒传。
+
+第二版（PoC 成功后）：
+
+- [ ] 支持目录先打包再 Cloud Download；先选择一种可流式、可恢复的归档格式，避免为了打包复制出第二份超大临时文件。
+- [ ] 支持已有命名 Cloudflare Tunnel + 自有域名，仍保持“仅任务期间开放”的生命周期。
+- [ ] 为 Cloud Download 建立持久 manifest / SQLite 索引，记录本地原路径、归档对象、PikPak file/task ID、hash、时间和恢复信息。
+- [ ] 设计客户端加密层；优先评估分块/内容寻址方案，而不是把整个目录加密成单一巨型密文。
+- [ ] 在加密层之上评估增量：chunk-level dedup / snapshot，而不是尝试对任意整体 AEAD 密文做原地 diff。
 
 ## 明确不做
 
