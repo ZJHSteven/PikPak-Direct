@@ -164,9 +164,6 @@ export async function createTemporaryFileServer({
       return;
     }
 
-    if (method === 'GET') stats.getRequests += 1;
-    if (method === 'HEAD') stats.headRequests += 1;
-
     const baseHeaders = {
       'Accept-Ranges': 'bytes',
       'Cache-Control': 'no-store',
@@ -190,6 +187,8 @@ export async function createTemporaryFileServer({
       }
 
       stats.rangeRequests += 1;
+      if (method === 'GET') stats.getRequests += 1;
+      if (method === 'HEAD') stats.headRequests += 1;
       const length = range.end - range.start + 1;
       response.writeHead(206, {
         ...baseHeaders,
@@ -217,6 +216,10 @@ export async function createTemporaryFileServer({
       stream.pipe(response);
       return;
     }
+
+    // 没有 Range 的正常请求到这里才算“已接受”，避免把 416 请求误计为成功 GET/HEAD。
+    if (method === 'GET') stats.getRequests += 1;
+    if (method === 'HEAD') stats.headRequests += 1;
 
     response.writeHead(200, {
       ...baseHeaders,
