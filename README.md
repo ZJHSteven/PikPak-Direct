@@ -6,9 +6,15 @@ PikPak-Direct 是一个面向 Windows / Mihomo TUN 环境的实验性上传与�
 
 当前已经在真实账号与真实网络上验证：PikPak Web 官方上传会创建 `UPLOAD_TYPE_RESUMABLE` 任务，并返回 Aliyun OSS 的临时上传参数。若把 PikPak 自定义 OSS CNAME 替换为对应的阿里云原生 OSS endpoint，正文可以通过现有 `aliyuncs.com -> DIRECT` 路由上传，同时 PikPak 服务端仍会正常把任务检入为完成。
 
+2026-09-19 又验证了第二条互补路线：把本地单文件临时暴露为
+`localhost HTTP -> Cloudflare Tunnel`，再由 PikPak Web 的 Cloud Download 主动回拉。
+1 MiB smoke test 最终真实保存进 `My Pack`，证明这条“反向拉取”数据面成立。
+
 > 重要：这是对当前 PikPak Web 实现的兼容性研究，不是 PikPak 官方公开稳定 API。项目必须保留 provider/region 检测、安全失败和回退机制。
 
 ## 当前架构
+
+### 路线 A：Aliyun OSS Direct Upload（已有 CLI）
 
 ```text
                         少量控制流量
@@ -31,6 +37,28 @@ PikPak-Direct 是一个面向 Windows / Mihomo TUN 环境的实验性上传与�
                                       progress=100 / COMPLETE
 ```
 
+### 路线 B：Cloud Download 反向拉取（PoC 已验证，尚未一键化）
+
+```text
+本地文件
+   │
+   ▼
+loopback-only 临时 HTTP
+127.0.0.1:<random-port>
+   │
+   ▼
+Cloudflare 临时 Tunnel
+   │        PikPak 主动 GET
+   └────────────────────────> PikPak Cloud Download
+                                  │
+                                  ▼
+                              PikPak 云盘
+```
+
+这条路线的意义是把正文从“普通 Upload”变成“Cloud Download 从公网 URL 保存”。
+当前已验证的是数据路径本身；Tunnel 生命周期和 PikPak Web 创建任务还没有封装成
+`cloud-pull` 一键命令，因此 README 不把它宣传成已完成 CLI。
+
 ## 为什么不用 WebDAV 做主上传
 
 WebDAV 仍然适合把 PikPak 挂成浏览盘、管理文件和偶尔传小文件，但本机实测存在两个问题：
@@ -40,8 +68,12 @@ WebDAV 仍然适合把 PikPak 挂成浏览盘、管理文件和偶尔传小文�
 
 因此项目策略是：
 
-- **P: / WebDAV**：浏览与轻量管理；
-- **PikPak-Direct**：正式批量上传与冷仓迁移。
+- **WebDAV / rclone**：保留为一次性诊断或轻量管理手段，不再常驻挂载；
+- **PikPak-Direct / OSS**：当前可用的正式单文件上传路线；
+- **Cloud Download 反向拉取**：新的冷仓主候选路线，PoC 已通，正在固化。
+
+2026-09-19 已确认 rclone VFS 无待上传数据后停止 `P:`，并禁用
+`PikPak Mount` 登录计划任务。配置仍保留，但当前不会自启动。
 
 ## 已验证结果
 
@@ -56,6 +88,18 @@ WebDAV 仍然适合把 PikPak 挂成浏览盘、管理文件和偶尔传小文�
 - 32 MiB 当次样本：原 endpoint 经代理约 14.45 Mbps，标准 OSS endpoint 经 DIRECT 约 27.72 Mbps。
 
 速度仅代表当时网络样本，不作为性能承诺。
+
+2026-09-19 Cloud Download 实验：
+
+- 本地源站仅监听 `127.0.0.1`；
+- 独立 Cloudflare Quick Tunnel 成功提供公网 HTTPS；
+- PikPak Web Cloud Download 创建任务后，本地源站真实收到 4 次远端 GET；
+- 文件最终出现在 `My Pack/smoke-1m.bin`；
+- 测试后远端文件、Quick Tunnel 和临时 HTTP 服务均已清理；
+- 正式源站模块现已支持 256 bit 随机 URL、GET/HEAD/单段 Range 与实际发送字节统计。
+
+完整记录见
+[`docs/experiments/2026-09-19-cloud-download-reverse-pull.md`](./docs/experiments/2026-09-19-cloud-download-reverse-pull.md)。
 
 ## 安全边界
 
@@ -139,7 +183,8 @@ npm run probe:web-upload -- --route direct --region ap-southeast-1 --size-mib 8
 
 ## 当前阶段
 
-阶段 1“实验固化”已经完成，正在进行 **阶段 2：正式 CLI MVP**。
+阶段 1“实验固化”已经完成；阶段 2“正式 CLI MVP”已有可工作的 OSS 单文件上传；
+同时正在推进 **阶段 6：Cloud Download 反向拉取工具化**。
 
 已经具备：
 
@@ -149,8 +194,10 @@ npm run probe:web-upload -- --route direct --region ap-southeast-1 --size-mib 8
 4. 多 DoH 共识自动发现 region；
 5. Node `ali-oss` 原生 multipart；
 6. secret 默认脱敏；
-7. 24 个离线单元测试；
-8. 真实 8 MiB Node CLI smoke test 完整成功。
+7. 28 个离线单元测试；
+8. 真实 8 MiB Node CLI smoke test 完整成功；
+9. loopback-only 临时单文件 HTTP 源站（随机 URL、HEAD/Range、发送字节统计）；
+10. Cloudflare Tunnel -> PikPak Cloud Download -> `My Pack` 的 1 MiB 真实 smoke test。
 
 尚未完成：
 
@@ -159,6 +206,9 @@ npm run probe:web-upload -- --route direct --region ap-southeast-1 --size-mib 8
 - 持久 multipart checkpoint / pause / resume；
 - STS 超过约 12 小时后的可靠换证；
 - 冷仓扫描、校验和本地观察期删除流程。
+- Cloud Download 的 Tunnel 自动生命周期；
+- PikPak Web Cloud Download 控制面的一键自动化；
+- 目录流式归档、客户端加密、SQLite manifest 与增量分块。
 
 此外，当前 PikPak Web 前端对桌面文件有 20GiB UI 限制，但 create-task 后端已实测接受 21GiB 与 100GiB 声明任务；这不等于 100GiB+ 单文件已获得长期稳定支持，因为 STS 生命周期仍需解决。
 
