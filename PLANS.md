@@ -83,13 +83,18 @@
 第一版严格限定为单文件 PoC：
 
 - [ ] 在现有 `PikPakWebSession` 中增加 `UPLOAD_TYPE_URL` Cloud Download 创建接口，继续复用已登录 PikPak Web 控制面，不引入额外账号密码或长期 token。
-- [ ] 建立只监听 `127.0.0.1` 的临时 HTTP 文件服务；公网路径使用高熵随机 token，不开放目录列表。
-- [ ] HTTP 服务支持 `GET`、`HEAD` 与单段 `Range`，以兼容远端探测、断点和重试。
+- [x] 建立只监听 `127.0.0.1` 的临时 HTTP 文件服务；公网路径使用 256 bit 随机 token，不开放目录列表。
+- [x] HTTP 服务支持 `GET`、`HEAD` 与单段 `Range`，并统计实际发送字节；离线单元测试已覆盖。
 - [ ] 使用独立的 Cloudflare Quick Tunnel 暴露该临时 HTTP 服务；不修改现有命名 Tunnel、DNS、Mihomo 或全局网络配置。
 - [ ] 新增 CLI 命令 `cloud-pull <local-file>`：启动 HTTP -> 启动 Tunnel -> 创建 PikPak Cloud Download -> 等待完成 -> 自动关闭 Tunnel/HTTP。
 - [ ] 对失败/超时保留 PikPak task/file 标识并停止公网服务；不自动删除用户已有云端文件。
 - [ ] 使用小文件完成一次真实端到端 smoke test，并在成功后清理本次测试文件。
 - [ ] 把请求次数、实际向 PikPak/Cloudflare 发送的字节数与 task 状态写入脱敏结果，确认是否发生完整拉取、Range 重试或秒传。
+
+已完成的手工 PoC 证据（尚不等于上面的一键 CLI 已完成）：
+
+- [x] 2026-09-19 使用 1 MiB 随机文件，手工启动 localhost HTTP + Cloudflare Quick Tunnel，并在 PikPak 官方 Web 创建 Cloud Download。
+- [x] 本地源站真实收到 4 次远端完整 GET，最终 `My Pack/smoke-1m.bin` 存在；随后测试文件与临时服务均清理。
 
 第二版（PoC 成功后）：
 
