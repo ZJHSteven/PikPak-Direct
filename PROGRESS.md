@@ -8,6 +8,10 @@
 - 2026-09-28 真实 1 MiB Direct smoke 尚未产生 OSS 数据上传：第一次因没有已打开 PikPak Drive 标签页安全退出；打开 Drive 页后第二次在创建 resumable task 前因 `__ppReq is not a function` 退出。
 - 实机只读探针确认当前 PikPak Web 仍只有 `webpackChunkpikpak_web` 主 runtime；module `99289` 与 `18839` 仍存在，导出分别仍包含 `D` 与 `kd`。因此当前问题是 bootstrap 捕获脆弱，而不是已验证的 create/task 模块消失。
 - bootstrap 修复策略：只有 `typeof require === 'function'` 且同时含 99289/18839 才接受；使用每次唯一 probe chunk id；存在多个 webpack chunk global 时逐个捕获并按目标 module id 验证。
+- bootstrap 修复完成后自动化测试为 **43/43 通过**。
+- 2026-09-28 真实 1 MiB Direct smoke 已再次成功：`PROVIDER_ALIYUN`、server endpoint `upload-a10b.mypikpak.com`、bucket `vip-lixian-07`；多家 DoH 共识识别 `ap-southeast-1`；实际数据面 endpoint 为 `oss-ap-southeast-1.aliyuncs.com`，route=`direct`。
+- 本次 1 MiB smoke 的 OSS 阶段约 **4.9 s**，PikPak check-in 约 **1.1 s** 即达到 `progress=100 / PHASE_TYPE_COMPLETE`；`--trash-after-success` 成功把测试文件移入 PikPak 回收站。
+- 因此 2026-09-28 当前结论是：Direct OSS 数据面仍可用，当前回归故障已确认并修复为 Web webpack runtime 捕获问题，而不是 PikPak 上传协议/module ID 失效。
 
 ## 当前结论（必须最新）
 
