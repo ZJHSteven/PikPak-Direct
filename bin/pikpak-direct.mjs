@@ -37,6 +37,13 @@ import { discoverAliyunRegion } from '../src/region-discovery.mjs';
 const DEFAULT_CDP_URL = 'http://127.0.0.1:9222';
 
 function printHelp() {
+  console.log(`新增冷迁移命令：
+  pikpak-direct migrate <file-or-directory> [--manifest <path>] [--backup-id <id>] [--dry-run]
+  pikpak-direct inspect-manifest <manifest.json>
+  pikpak-direct verify-local <manifest.json> [--full-hash]
+
+迁移默认：不删除本地源文件；全部文件完成后上传便携 manifest；可用 --no-upload-manifest 关闭。
+`);
   console.log(`PikPak-Direct
 
 用法：
