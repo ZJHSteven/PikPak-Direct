@@ -124,6 +124,18 @@ function parseArgs(argv) {
       index += 1;
     } else if (flag === '--trash-after-success') {
       args.trashAfterSuccess = true;
+    } else if (flag === '--manifest') {
+      args.manifestPath = value;
+      index += 1;
+    } else if (flag === '--backup-id') {
+      args.backupId = value;
+      index += 1;
+    } else if (flag === '--dry-run') {
+      args.dryRun = true;
+    } else if (flag === '--no-upload-manifest') {
+      args.uploadPortableManifest = false;
+    } else if (flag === '--full-hash') {
+      args.fullHash = true;
     } else {
       throw new Error(`未知参数: ${flag}`);
     }
