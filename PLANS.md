@@ -1,5 +1,21 @@
 # PikPak-Direct 执行计划
 
+## 2026-09-27：冷迁移 Manifest / 目录迁移落地计划
+
+本轮把项目从“单文件上传器”推进为真正可恢复的冷迁移工具。实现时坚持一个核心原则：
+**云端文件即使脱离本机目录结构，也必须能够仅凭 manifest 无歧义地恢复到原路径。**
+
+- [ ] 新增原子写入的 JSON manifest：记录 schema、backup id、源根目录、创建时间、路由策略与每个文件的相对路径、大小、mtime、SHA-1、远端名、fileId/taskId、上传状态和错误。
+- [ ] 新增 `migrate <file-or-directory>`：目录递归枚举、稳定排序、逐文件上传；默认永不删除本地源文件。
+- [ ] 远端对象名采用 `backup-id + 稳定序号 + basename`，真实层级完全保存在 manifest，避免同名冲突，也避免依赖 PikPak 当前内部的建目录 API。
+- [ ] 迁移中每个状态变化都原子落盘；中断后重新运行同一 manifest 时，已完成且本地元数据未变化的文件直接跳过。
+- [ ] 持久化 Aliyun multipart checkpoint；明确标注其受 PikPak STS 有效期限制，过期不得伪装成可无缝续传。
+- [ ] 迁移完成后生成一份可携带的 manifest 副本；支持把 manifest 本身作为最后一个对象上传到同一 parent-id。
+- [ ] 新增 `inspect-manifest` / `verify-local`，让恢复前可以确认源文件变化、远端映射和完成度。
+- [ ] 第一版加密字段固定为 `encryption: none`。在没有完成真正流式加密前，不提供会产生整文件临时密文副本的“伪加密迁移”。后续优先结合 Cloud Download 临时 HTTP 源实现流式 AEAD/分块加密。
+- [ ] 为 manifest、目录枚举、断点恢复、冲突/源文件变化等边界补单元测试，并跑完整测试套件。
+
+
 ## 项目目标
 
 把本轮已经验证成功的 PikPak 官方上传链路沉淀成长期可维护项目，最终提供一个安全、可复现、可自动化的 Direct Upload / Cold Archive 工具链。
