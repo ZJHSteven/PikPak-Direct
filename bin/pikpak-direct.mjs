@@ -29,6 +29,8 @@ import { stat } from 'node:fs/promises';
 import { sha1File } from '../src/file-hash.mjs';
 import { uploadFileToPikPakOss } from '../src/oss-uploader.mjs';
 import { isSafeAliyunRegion } from '../src/aliyun-endpoint.mjs';
+import { loadMigrationManifest } from '../src/migration-manifest.mjs';
+import { runMigration, verifyManifestLocal } from '../src/migration-runner.mjs';
 import { PikPakWebSession } from '../src/pikpak-web-session.mjs';
 import { discoverAliyunRegion } from '../src/region-discovery.mjs';
 
