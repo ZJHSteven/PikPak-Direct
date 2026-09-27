@@ -3,11 +3,12 @@
 
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
 
 import {
+  buildPortableManifest,
   createMigrationManifest,
   enumerateSource,
   inspectLocalEntry,
@@ -131,6 +132,30 @@ test('inspectLocalEntry 能识别源文件变化', async () => {
     await writeFile(source, 'after changed');
     const after = await inspectLocalEntry(manifest, manifest.entries[0]);
     assert.equal(after.unchanged, false);
+  });
+});
+
+test('便携 manifest 保留恢复映射，但不泄露本机绝对路径和 checkpoint', async () => {
+  await withTempDirectory(async (root) => {
+    const source = join(root, 'secret-local-root');
+    await mkdir(source);
+    await writeFile(join(source, '课件.txt'), 'demo');
+    const manifest = await createMigrationManifest({ sourcePath: source, backupId: 'portable' });
+    manifest.entries[0].status = 'complete';
+    manifest.entries[0].sha1 = 'b'.repeat(40);
+    manifest.entries[0].fileId = 'file-1';
+    manifest.entries[0].taskId = 'task-1';
+    manifest.entries[0].checkpoint = { uploadId: 'should-not-upload' };
+
+    const portable = buildPortableManifest(manifest);
+    const serialized = JSON.stringify(portable);
+
+    assert.equal(portable.source.label, 'secret-local-root');
+    assert.equal(portable.entries[0].relativePath, '课件.txt');
+    assert.equal(portable.entries[0].fileId, 'file-1');
+    assert.equal('checkpoint' in portable.entries[0], false);
+    assert.equal(serialized.includes(resolve(source)), false);
+    assert.equal(serialized.includes('should-not-upload'), false);
   });
 });
 

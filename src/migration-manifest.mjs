@@ -308,3 +308,46 @@ export async function inspectLocalEntry(manifest, entry) {
   }
 }
 
+/**
+ * 生成适合上传到云端的“便携恢复 manifest”。
+ *
+ * 本地运行态 manifest 需要绝对路径和 multipart checkpoint，方便断点续传；但把这些内容直接上传
+ * 会暴露 Windows 用户名/本机目录结构中不必要的部分，也可能把临时 uploadId 带到云端。
+ * 便携版只保留恢复一份冷备份真正需要的信息：源根目录的显示名、相对路径、大小、mtime、SHA-1、
+ * 远端对象名和 PikPak file/task id。它不包含 cookie、STS、checkpoint，也不包含本机绝对路径。
+ */
+export function buildPortableManifest(manifest) {
+  return {
+    schemaVersion: manifest.schemaVersion,
+    kind: 'pikpak-direct-portable-manifest',
+    backupId: manifest.backupId,
+    createdAt: manifest.createdAt,
+    exportedAt: new Date().toISOString(),
+    source: {
+      label: basename(manifest.source.root),
+      type: manifest.source.type,
+    },
+    destination: {
+      parentId: manifest.destination?.parentId || '',
+    },
+    policy: {
+      route: manifest.policy?.route || 'unknown',
+      encryption: manifest.policy?.encryption || 'none',
+    },
+    summary: refreshManifestSummary(manifest).summary,
+    entries: manifest.entries.map((entry) => ({
+      index: entry.index,
+      relativePath: entry.relativePath,
+      size: entry.size,
+      mtimeMs: entry.mtimeMs,
+      sha1: entry.sha1,
+      remoteName: entry.remoteName,
+      status: entry.status,
+      fileId: entry.fileId,
+      taskId: entry.taskId,
+      provider: entry.provider,
+      completedAt: entry.completedAt,
+    })),
+  };
+}
+
