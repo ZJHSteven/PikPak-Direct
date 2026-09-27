@@ -355,6 +355,143 @@ async function uploadCommand(args) {
   }
 }
 
+/**
+ * 把 migration runner 的结构化事件压缩成适合人工观察的终端日志。
+ * multipart progress 只按 5% 桶输出一次，避免大文件几千个 part 把终端刷满。
+ */
+function createMigrationEventPrinter() {
+  const progressBuckets = new Map();
+
+  return (event) => {
+    if (event.type === 'manifest-ready') {
+      console.log(`manifest: ${event.manifestPath}`);
+      console.log(
+        `backup=${event.manifest.backupId}, files=${event.manifest.summary.totalFiles}, `
+        + `size=${formatBytes(event.manifest.summary.totalBytes)}`,
+      );
+      return;
+    }
+
+    if (event.type === 'file-skip-complete') {
+      console.log(`[skip] ${event.entry.relativePath}`);
+      return;
+    }
+
+    if (event.type === 'hash-start') {
+      console.log(`[hash] ${event.entry.relativePath}`);
+      return;
+    }
+
+    if (event.type === 'upload-start') {
+      console.log(`[upload] ${event.entry.relativePath} -> ${event.entry.remoteName}`);
+      return;
+    }
+
+    if (event.type === 'upload-progress') {
+      const percent = Math.min(100, Number(event.progress?.percentage || 0) * 100);
+      const bucket = Math.floor(percent / 5);
+      if (progressBuckets.get(event.entry.index) !== bucket) {
+        progressBuckets.set(event.entry.index, bucket);
+        console.log(`         ${percent.toFixed(1)}%`);
+      }
+      return;
+    }
+
+    if (event.type === 'upload-complete') {
+      console.log(`[done] ${event.entry.relativePath}`);
+      return;
+    }
+
+    if (event.type === 'upload-failed') {
+      console.error(`[failed] ${event.entry.relativePath}: ${event.error?.message || event.error}`);
+      return;
+    }
+
+    if (event.type === 'portable-manifest-upload-start') {
+      console.log(`[manifest upload] ${event.portablePath}`);
+      return;
+    }
+
+    if (event.type === 'portable-manifest-upload-complete') {
+      console.log(`[manifest done] ${event.cloudManifest.remoteName}`);
+    }
+  };
+}
+
+/** 执行文件/目录冷迁移；默认只 copy，不删除任何本地源。 */
+async function migrateCommand(args) {
+  const result = await runMigration({
+    sourcePath: resolve(args.localFile),
+    manifestPath: args.manifestPath,
+    backupId: args.backupId,
+    parentId: args.parentId,
+    route: args.route,
+    region: args.region,
+    parallel: args.parallel,
+    checkInTimeoutSec: args.checkInTimeoutSec,
+    cdpUrl: args.cdpUrl,
+    dryRun: args.dryRun,
+    uploadPortableManifest: args.uploadPortableManifest,
+    onEvent: createMigrationEventPrinter(),
+  });
+
+  console.log('\n迁移状态：');
+  console.log(JSON.stringify({
+    manifestPath: result.manifestPath,
+    backupId: result.manifest.backupId,
+    dryRun: result.dryRun,
+    summary: result.manifest.summary,
+    cloudManifest: result.manifest.cloudManifest || null,
+    encryption: result.manifest.policy.encryption,
+  }, null, 2));
+}
+
+/** 查看一份本地运行态 manifest 的总体状态和每个文件的云端映射。 */
+async function inspectManifestCommand(args) {
+  const manifest = await loadMigrationManifest(args.manifestPath);
+
+  console.log(JSON.stringify({
+    schemaVersion: manifest.schemaVersion,
+    backupId: manifest.backupId,
+    createdAt: manifest.createdAt,
+    updatedAt: manifest.updatedAt,
+    source: manifest.source,
+    destination: manifest.destination,
+    policy: manifest.policy,
+    summary: manifest.summary,
+    cloudManifest: manifest.cloudManifest || null,
+    warnings: manifest.warnings || [],
+  }, null, 2));
+
+  console.table(manifest.entries.map((entry) => ({
+    index: entry.index,
+    status: entry.status,
+    size: formatBytes(entry.size),
+    relativePath: entry.relativePath,
+    remoteName: entry.remoteName,
+    fileId: entry.fileId || '',
+  })));
+}
+
+/**
+ * 校验 manifest 对应的本地源是否还是建立快照时的版本。
+ * 默认 size/mtime 快速校验；--full-hash 会对已经有 SHA-1 的条目重新读盘比对。
+ */
+async function verifyLocalCommand(args) {
+  const manifest = await loadMigrationManifest(args.manifestPath);
+  const result = await verifyManifestLocal(manifest, { fullHash: args.fullHash });
+  const problems = result.results.filter((item) => (
+    !item.exists || !item.metadataMatches || item.hashMatches === false
+  ));
+
+  console.log(
+    `verify-local: ${result.ok ? 'OK' : 'FAILED'}; `
+    + `files=${result.results.length}; problems=${problems.length}`,
+  );
+  if (problems.length > 0) console.table(problems);
+  if (!result.ok) process.exitCode = 4;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
