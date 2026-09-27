@@ -9,6 +9,7 @@
 import OSS from 'ali-oss';
 
 import { normalizeAliyunResumable } from './aliyun-endpoint.mjs';
+import { sanitizeCheckpoint } from './migration-manifest.mjs';
 
 const MIB = 1024 * 1024;
 
@@ -106,7 +107,9 @@ export function sanitizeOssError(error) {
  * @param {string|null} options.regionHint
  * @param {'direct-only'|'prefer-direct'|'server'} [options.policy='direct-only']
  * @param {number} [options.parallel=4]
+ * @param {object|null} [options.checkpoint]
  * @param {(state: object) => void} [options.onProgress]
+ * @param {(checkpoint: object) => (void|Promise<void>)} [options.onCheckpoint]
  * @returns {Promise<object>} 非敏感上传结果。
  */
 export async function uploadFileToPikPakOss({
@@ -116,7 +119,9 @@ export async function uploadFileToPikPakOss({
   regionHint,
   policy = 'direct-only',
   parallel = 4,
+  checkpoint = null,
   onProgress,
+  onCheckpoint,
 }) {
   if (!session?.getOssCredentials) {
     throw new Error('缺少有效 PikPakUploadSession。');
@@ -152,11 +157,17 @@ export async function uploadFileToPikPakOss({
       {
         parallel,
         partSize,
-        // checkpoint 先只存在内存。若 SDK 内部发生可恢复重试，progress 会不断给出新 checkpoint。
-        checkpoint: latestCheckpoint,
-        progress(percentage, checkpoint, response) {
-          latestCheckpoint = checkpoint || latestCheckpoint;
+        // ali-oss 官方支持把上一次 progress 回调给出的 checkpoint 再传回 multipartUpload，
+        // 这样可以跳过已经上传成功的 part。上层负责把 checkpoint 持久化到 migration manifest。
+        checkpoint: checkpoint || undefined,
+        async progress(percentage, nextCheckpoint, response) {
+          latestCheckpoint = nextCheckpoint || latestCheckpoint;
           latestProgress = Math.max(latestProgress, Number(percentage || 0));
+
+          // 只把恢复 multipart 必需的白名单字段交给上层，避免把 STS/client/response 意外写盘。
+          if (latestCheckpoint && onCheckpoint) {
+            await onCheckpoint(sanitizeCheckpoint(latestCheckpoint));
+          }
 
           onProgress?.({
             percentage: latestProgress,
