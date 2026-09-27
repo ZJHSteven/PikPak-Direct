@@ -1,5 +1,14 @@
 # 项目状态快照
 
+## 2026-09-28 恢复记录：目录冷迁移已落地，PikPak Web bootstrap 回归修复中
+
+- 已新增可恢复冷迁移基础设施：目录递归、稳定远端命名、持久 JSON manifest、源文件 size/mtime 变化保护、SHA-1 映射、便携恢复 manifest、Aliyun multipart checkpoint 持久化接口。
+- CLI 已新增 `migrate`、`inspect-manifest`、`verify-local`；`migrate --dry-run -> inspect-manifest -> verify-local` 已用 `C:\\Temp` 两文件目录做整链离线 smoke，实际通过。
+- 当前自动化测试在 bootstrap 修复前为 39/39 通过；本轮新增 PikPak Web bootstrap 回归测试，专门覆盖陈旧 `__ppWebpackRequire`、多个 webpack runtime 与 probe chunk id 冲突。
+- 2026-09-28 真实 1 MiB Direct smoke 尚未产生 OSS 数据上传：第一次因没有已打开 PikPak Drive 标签页安全退出；打开 Drive 页后第二次在创建 resumable task 前因 `__ppReq is not a function` 退出。
+- 实机只读探针确认当前 PikPak Web 仍只有 `webpackChunkpikpak_web` 主 runtime；module `99289` 与 `18839` 仍存在，导出分别仍包含 `D` 与 `kd`。因此当前问题是 bootstrap 捕获脆弱，而不是已验证的 create/task 模块消失。
+- bootstrap 修复策略：只有 `typeof require === 'function'` 且同时含 99289/18839 才接受；使用每次唯一 probe chunk id；存在多个 webpack chunk global 时逐个捕获并按目标 module id 验证。
+
 ## 当前结论（必须最新）
 
 - 现状：阶段 1“项目骨架与实验固化”已完成；阶段 2“正式 CLI MVP”已有 Aliyun OSS 单文件直传；阶段 6“Cloud Download 反向拉取”已完成真实端到端 PoC，正在从手工 PoC 固化为可自动化工具。

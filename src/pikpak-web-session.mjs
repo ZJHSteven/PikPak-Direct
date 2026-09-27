@@ -176,14 +176,58 @@ async function findPikPakTarget(cdpUrl) {
  * 这是当前控制面桥接的技术债：正式长期版本应优先寻找更稳定的官方 CLI/PAT/API 登录方式，
  * 但在现阶段，复用已登录 Web 会话最安全，也不需要把长期账号密码写入本项目。
  */
-function webpackBootstrapExpression() {
+export function webpackBootstrapExpression() {
   return `
-    const __ppChunkKey=Object.keys(window).find(k=>k.startsWith('webpackChunk'));
-    if(!__ppChunkKey) throw new Error('PikPak webpack chunk global not found');
-    if(!window.__ppWebpackRequire){
-      window[__ppChunkKey].push([[987654321],{},r=>window.__ppWebpackRequire=r]);
+    const __ppRequiredModuleIds=[${WEBPACK_MODULES.createUploadFile},${WEBPACK_MODULES.fileAndTaskApi}];
+    const __ppIsUsableRequire=(candidate)=>
+      typeof candidate==='function'
+      && candidate.m
+      && __ppRequiredModuleIds.every(id=>Boolean(candidate.m[id]));
+
+    let __ppReq=__ppIsUsableRequire(window.__ppWebpackRequire)
+      ? window.__ppWebpackRequire
+      : null;
+
+    if(!__ppReq){
+      const __ppChunkKeys=Object.keys(window).filter(k=>
+        k.startsWith('webpackChunk')
+        && window[k]
+        && typeof window[k].push==='function'
+      );
+
+      if(__ppChunkKeys.length===0){
+        throw new Error('PikPak webpack chunk global not found');
+      }
+
+      for(const __ppChunkKey of __ppChunkKeys){
+        let __ppCaptured=null;
+        try{
+          // 旧实现固定使用 987654321 作为 probe chunk id。若同一页面曾执行过一次，
+          // webpack 可能把该 chunk 视为已经加载，从而不再执行 runtime 回调。
+          // 使用每次唯一的字符串 id，保证本轮 probe 一定是新的 chunk。
+          const __ppProbeChunkId='pikpak-direct-'+Date.now()+'-'+Math.random().toString(16).slice(2);
+          window[__ppChunkKey].push([
+            [__ppProbeChunkId],
+            {},
+            r=>{__ppCaptured=r;}
+          ]);
+        }catch(_error){
+          __ppCaptured=null;
+        }
+
+        // 页面未来如果出现多个 webpack runtime，只接受同时含有当前已验证目标模块的那个。
+        // 这样不会把别的微前端/第三方 bundle 的 require 错当成 PikPak 主应用 runtime。
+        if(__ppIsUsableRequire(__ppCaptured)){
+          __ppReq=__ppCaptured;
+          window.__ppWebpackRequire=__ppCaptured;
+          break;
+        }
+      }
     }
-    const __ppReq=window.__ppWebpackRequire;
+
+    if(!__ppIsUsableRequire(__ppReq)){
+      throw new Error('PikPak webpack require capture failed or expected modules are missing');
+    }
   `;
 }
 
