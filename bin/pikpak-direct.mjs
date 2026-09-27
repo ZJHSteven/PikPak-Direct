@@ -503,6 +503,12 @@ async function main() {
 
   if (args.command === 'upload') {
     await uploadCommand(args);
+  } else if (args.command === 'migrate') {
+    await migrateCommand(args);
+  } else if (args.command === 'inspect-manifest') {
+    await inspectManifestCommand(args);
+  } else if (args.command === 'verify-local') {
+    await verifyLocalCommand(args);
   }
 }
 
