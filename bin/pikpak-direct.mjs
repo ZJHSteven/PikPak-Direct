@@ -70,7 +70,7 @@ function parseArgs(argv) {
   }
 
   const command = argv[0];
-  if (command !== 'upload') {
+  if (!new Set(['upload', 'migrate', 'inspect-manifest', 'verify-local']).has(command)) {
     throw new Error(`当前只支持 upload 命令，收到: ${command}`);
   }
 
@@ -90,6 +90,11 @@ function parseArgs(argv) {
     checkInTimeoutSec: 180,
     cdpUrl: DEFAULT_CDP_URL,
     trashAfterSuccess: false,
+    manifestPath: command === 'inspect-manifest' || command === 'verify-local' ? localFile : null,
+    backupId: null,
+    dryRun: false,
+    uploadPortableManifest: true,
+    fullHash: false,
   };
 
   for (let index = 2; index < argv.length; index += 1) {
