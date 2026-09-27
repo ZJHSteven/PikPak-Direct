@@ -145,6 +145,8 @@ function parseArgs(argv) {
 }
 
 function validateArgs(args) {
+  if (args.command === 'inspect-manifest' || args.command === 'verify-local') return;
+
   if (!['direct-only', 'prefer-direct', 'server'].includes(args.route)) {
     throw new Error('--route 只能是 direct-only、prefer-direct 或 server。');
   }
