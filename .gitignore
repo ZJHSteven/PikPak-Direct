@@ -8,6 +8,10 @@ logs/
 *.log
 *.har
 
+# 冷迁移运行态 manifest 会记录本机绝对路径、远端 fileId/taskId 与断点信息。
+# 它们是用户数据，不属于源码，也不能误提交到 Git。
+manifests/
+
 # 任何可能包含真实 PikPak/STS/HTTP 授权信息的抓包或响应转储都禁止提交。
 secrets/
 credentials/
