@@ -114,7 +114,17 @@ test('单 pack 损坏只污染该 pack，重建索引仍能报告其他 pack', a
 
   for (let i = 0; i < 6; i += 1) {
     const content = Buffer.alloc(180 * 1024);
-    for (let j = 0; j < content.length; j += 1) content[j] = (j * (17 + i) + i * 31) & 0xff;
+    // 旧夹具用线性公式 `(j*k+c)&255`，实际上每 256 字节就周期重复，Brotli 会把
+    // 六个“180 KiB 文件”压到一个很小的 pack，导致测试根本制造不出多 pack 场景。
+    // 固定 seed 的 xorshift32 既保持测试可复现，又足够接近不可压缩数据，能稳定跨过
+    // 128 KiB pack target，真正验证“一个 pack 坏了，其余 pack 仍可扫描”。
+    let state = (0x9e3779b9 ^ (i * 0x45d9f3b)) >>> 0;
+    for (let j = 0; j < content.length; j += 1) {
+      state ^= state << 13;
+      state ^= state >>> 17;
+      state ^= state << 5;
+      content[j] = state & 0xff;
+    }
     await writeFile(join(sourceDir, `file-${i}.bin`), content);
   }
 

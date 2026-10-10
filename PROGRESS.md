@@ -13,6 +13,7 @@
 - pack index 不再依赖 SQLite：`rebuildPackIndex()` 只读每个 pack 的 header/footer/加密 TOC 即可恢复 `chunkId -> pack/offset`；单 pack TOC 损坏会被隔离进 errors，不阻塞其他 pack 扫描。
 - 离线灾难恢复主流程已实现：backup 做 chunk-level 去重与不可变 snapshot；restore 可仅用 recovery key 重新扫描 pack/snapshot 并逐文件 hash 校验；verify-repo 可全量逐 chunk 解密/解压/SHA-256 体检。
 - 新仓库测试首轮暴露的唯一前置失败是测试 pack 设为 128/256 KiB，而初始化器把 packTargetBytes 最低限制为 1 MiB；该限制与格式/密码学无关，已放宽为 64 KiB，生产默认仍保持 128 MiB，便于快速覆盖多 pack 与损坏隔离测试。
+- 仓库 round-trip 已实际通过：第二个增量 snapshot 能在没有本地 index/cache、没有 password 的情况下，仅凭 recovery key 扫描 pack TOC + snapshot 完整恢复，逐文件 SHA-256 一致。剩余“单 pack 损坏隔离”测试失败定位为夹具数据具有 256-byte 周期、被 Brotli 极度压缩而没形成多 pack；已改为固定 seed xorshift32 不可压缩夹具，确保测试真的覆盖多个 pack。
 
 - Live Ops 已新增两个独立子项：Route A“Chrome 生命周期与自动登录”、Route B“Cloud Download 无网页 fallback”，均置为 doing。
 - Route A 当前已做独立登录页实测：全新 9333 临时 Chrome 访问 /drive 会跳到 /drive/login?redirect=/all；默认可见 Google/Facebook/Apple 登录，底部有手机/邮箱/二维码入口；点击邮箱后出现“请输入邮箱”“请输入密码”和“登录”按钮。
