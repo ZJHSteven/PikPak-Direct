@@ -343,6 +343,7 @@ export function buildPortableManifest(manifest) {
       sha1: entry.sha1,
       remoteName: entry.remoteName,
       status: entry.status,
+      storageMode: entry.storageMode || 'remote-object',
       fileId: entry.fileId,
       taskId: entry.taskId,
       provider: entry.provider,

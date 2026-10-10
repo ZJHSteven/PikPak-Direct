@@ -7,7 +7,12 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
 
-import { prepareMigration, runMigration, verifyManifestLocal } from '../src/migration-runner.mjs';
+import {
+  markEmptyFileComplete,
+  prepareMigration,
+  runMigration,
+  verifyManifestLocal,
+} from '../src/migration-runner.mjs';
 
 async function withTempDirectory(callback) {
   const root = await mkdtemp(join(tmpdir(), 'pikpak-runner-test-'));
@@ -95,5 +100,39 @@ test('verifyManifestLocal 能在文件改动后报告快照失配', async () => 
     await writeFile(file, 'changed-content');
     assert.equal((await verifyManifestLocal(prepared.manifest)).ok, false);
   });
+});
+
+test('0 字节文件使用 manifest-only 完成态，不伪造远端 file/task id', () => {
+  const original = {
+    index: 3,
+    relativePath: 'empty.txt',
+    size: 0,
+    sha1: 'da39a3ee5e6b4b0d3255bfef95601890afd80709',
+    remoteName: 'backup__000004__empty.txt',
+    status: 'failed',
+    fileId: 'stale-file',
+    taskId: 'stale-task',
+    checkpoint: { uploadId: 'stale' },
+    lastError: 'old failure',
+  };
+  const now = new Date('2026-10-10T15:00:00.000Z');
+
+  const completed = markEmptyFileComplete(original, now);
+
+  assert.equal(completed.status, 'complete');
+  assert.equal(completed.storageMode, 'manifest-only-empty');
+  assert.equal(completed.fileId, null);
+  assert.equal(completed.taskId, null);
+  assert.equal(completed.checkpoint, null);
+  assert.equal(completed.lastError, null);
+  assert.equal(completed.completedAt, now.toISOString());
+  assert.equal(original.status, 'failed');
+});
+
+test('manifest-only helper 拒绝非 0 字节文件', () => {
+  assert.throws(
+    () => markEmptyFileComplete({ size: 1 }),
+    /只接受 size=0/,
+  );
 });
 

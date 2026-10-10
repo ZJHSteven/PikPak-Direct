@@ -1,5 +1,15 @@
 # PikPak-Direct 执行计划
 
+## 2026-10-10：手机冷备实战 / 0 字节文件边界修复
+
+- [x] 用现有 P30 备份目录跑 migrate --dry-run，确认 18 个文件、28.76 GiB 能正确建 manifest。
+- [x] 打开已登录 PikPak Drive 标签页并开始真实 Route A / Aliyun OSS DIRECT 迁移。
+- [x] 实机确认普通非空文件可继续完成 DIRECT 上传与 PikPak COMPLETE。
+- [x] 修复 0 字节文件：不再向 PikPak 创建 resumable task，而是在 manifest 中标记为 manifest-only-empty；恢复时按 manifest 重建空文件。
+- [x] 为 0 字节文件语义补单元测试，并跑完整测试套件。
+- [ ] 从现有 manifest 断点继续 P30 冷备；已 COMPLETE 的文件跳过，不重复上传。
+- [ ] 全部文件与 portable manifest 完成后，再做云端校验；未经用户明确授权不删除本地 P30 备份。
+
 ## 2026-09-27：冷迁移 Manifest / 目录迁移落地计划
 
 本轮把项目从“单文件上传器”推进为真正可恢复的冷迁移工具。实现时坚持一个核心原则：

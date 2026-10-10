@@ -32,6 +32,42 @@ import { discoverAliyunRegion } from './region-discovery.mjs';
 const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_CDP_URL = 'http://127.0.0.1:9222';
 
+/**
+ * 把“0 字节普通文件”标记成 manifest-only 完成态。
+ *
+ * 为什么不把空文件也上传成 PikPak 对象：
+ * - 当前 PikPak resumable create-task 对 size=0 会返回 create error；
+ * - 空文件没有需要传输的数据，真正需要保存的是“这个路径存在一个长度为 0 的普通文件”；
+ * - portable manifest 已经保存 relativePath / mtime / SHA-1，因此恢复端可以无歧义地重建空文件。
+ *
+ * 这里故意保留 remoteName，但 fileId/taskId 为空，并使用 storageMode 明确说明：
+ * “云端没有对应数据对象，这一项只由 manifest 表达”。
+ *
+ * @param {object} entry 冷迁移 manifest 中的文件条目。
+ * @param {Date} now 允许测试注入固定时间。
+ * @returns {object} 新的完成态条目，不原地修改调用方对象。
+ */
+export function markEmptyFileComplete(entry, now = new Date()) {
+  if (Number(entry?.size) !== 0) {
+    throw new Error('markEmptyFileComplete 只接受 size=0 的普通文件。');
+  }
+
+  return {
+    ...entry,
+    status: 'complete',
+    storageMode: 'manifest-only-empty',
+    fileId: null,
+    taskId: null,
+    provider: null,
+    stsExpiration: null,
+    effectiveEndpoint: null,
+    dataRoute: null,
+    checkpoint: null,
+    completedAt: now.toISOString(),
+    lastError: null,
+  };
+}
+
 async function pathExists(path) {
   try {
     await access(path, fsConstants.F_OK);
@@ -287,6 +323,17 @@ export async function runMigration({
         manifest = await saveMigrationManifest(resolvedManifestPath, manifest);
         entry = manifest.entries[index];
         onEvent({ type: 'hash-complete', entry });
+      }
+
+      // PikPak 当前的 resumable create-task 对 0 字节文件会直接失败。
+      // 冷备恢复真正需要的是“这个相对路径存在一个空文件”，不需要制造一个没有正文的云对象。
+      // 因此空文件只记录在 manifest：SHA-1 仍会计算（空文件为标准空串 SHA-1），
+      // portable manifest 也会携带 storageMode，恢复时据此重新创建 0 字节文件。
+      if (Number(entry.size) === 0) {
+        manifest.entries[index] = markEmptyFileComplete(entry);
+        manifest = await saveMigrationManifest(resolvedManifestPath, manifest);
+        onEvent({ type: 'empty-file-manifest-only', entry: manifest.entries[index] });
+        continue;
       }
 
       entry.status = 'uploading';

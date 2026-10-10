@@ -146,6 +146,7 @@ test('便携 manifest 保留恢复映射，但不泄露本机绝对路径和 che
     manifest.entries[0].fileId = 'file-1';
     manifest.entries[0].taskId = 'task-1';
     manifest.entries[0].checkpoint = { uploadId: 'should-not-upload' };
+    manifest.entries[0].storageMode = 'manifest-only-empty';
 
     const portable = buildPortableManifest(manifest);
     const serialized = JSON.stringify(portable);
@@ -153,6 +154,7 @@ test('便携 manifest 保留恢复映射，但不泄露本机绝对路径和 che
     assert.equal(portable.source.label, 'secret-local-root');
     assert.equal(portable.entries[0].relativePath, '课件.txt');
     assert.equal(portable.entries[0].fileId, 'file-1');
+    assert.equal(portable.entries[0].storageMode, 'manifest-only-empty');
     assert.equal('checkpoint' in portable.entries[0], false);
     assert.equal(serialized.includes(resolve(source)), false);
     assert.equal(serialized.includes('should-not-upload'), false);

@@ -1,5 +1,15 @@
 # 项目状态快照
 
+## 2026-10-10 手机冷备实战：P30 Route A 已重新验证，发现并修复空文件边界
+
+- 现有 P30 备份 D:\\PhoneBackups\\Huawei_P30_VOG-AL00_2026-09-20 已实测进入冷迁移流程：18 个文件、28.76 GiB，dry-run manifest 正常生成。
+- 当前 CDP Chrome 已打开并保持 PikPak Drive 登录态；真实迁移中 _test_sounds.tar、calendar_events.txt 已通过 Route A 完成 Aliyun OSS DIRECT 上传并达到 PikPak COMPLETE，证明 2026-10-10 这条主链仍然可用。
+- 第三个文件 calllog.txt 为 0 字节，旧逻辑仍尝试创建 resumable task，PikPak 返回 unknown create error 并中止整次迁移。
+- 修复策略：0 字节文件不再创建远端数据对象，而是计算标准空文件 SHA-1 后在 manifest 中写成 storageMode=manifest-only-empty、status=complete；portable manifest 同步携带该字段，恢复端可按路径/mtime/size 无歧义重建空文件。
+- 该处理不会删除或忽略空文件语义，只是避免为“没有正文的数据”强行制造 PikPak upload task。
+- 自动化测试已更新为 45/45 全绿。
+- 下一步：提交本轮修复，然后使用同一 manifest 继续 P30 迁移；已 COMPLETE 的前两个文件会自动跳过。
+
 ## 2026-09-28 恢复记录：目录冷迁移已落地，PikPak Web bootstrap 回归修复中
 
 - 已新增可恢复冷迁移基础设施：目录递归、稳定远端命名、持久 JSON manifest、源文件 size/mtime 变化保护、SHA-1 映射、便携恢复 manifest、Aliyun multipart checkpoint 持久化接口。
