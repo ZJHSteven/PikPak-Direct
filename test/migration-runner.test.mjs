@@ -136,3 +136,28 @@ test('manifest-only helper 拒绝非 0 字节文件', () => {
   );
 });
 
+test('相同 backup-id 会自动恢复默认 manifest，不要求显式传 --manifest', async () => {
+  await withTempDirectory(async (root) => {
+    const source = join(root, 'source');
+    const manifestDirectory = join(root, 'manifests');
+    await mkdir(source);
+    await writeFile(join(source, 'a.txt'), 'a');
+
+    const first = await prepareMigration({
+      sourcePath: source,
+      backupId: 'auto-resume',
+      manifestDirectory,
+    });
+    assert.equal(first.resumed, false);
+
+    const second = await prepareMigration({
+      sourcePath: source,
+      backupId: 'auto-resume',
+      manifestDirectory,
+    });
+    assert.equal(second.resumed, true);
+    assert.equal(second.manifestPath, first.manifestPath);
+    assert.equal(second.manifest.createdAt, first.manifest.createdAt);
+  });
+});
+

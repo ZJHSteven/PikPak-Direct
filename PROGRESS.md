@@ -8,7 +8,10 @@
 - 修复策略：0 字节文件不再创建远端数据对象，而是计算标准空文件 SHA-1 后在 manifest 中写成 storageMode=manifest-only-empty、status=complete；portable manifest 同步携带该字段，恢复端可按路径/mtime/size 无歧义重建空文件。
 - 该处理不会删除或忽略空文件语义，只是避免为“没有正文的数据”强行制造 PikPak upload task。
 - 自动化测试已更新为 45/45 全绿。
-- 下一步：提交本轮修复，然后使用同一 manifest 继续 P30 迁移；已 COMPLETE 的前两个文件会自动跳过。
+- 随后实战重跑又发现第二个断点恢复问题：只传同一 backup-id 时，旧实现没有自动发现默认 manifests/<backup-id>.json，而是重新创建并覆盖 manifest，导致已完成状态丢失并开始重复上传。
+- 已确定修复方向：prepareMigration 在未显式传 manifestPath 时，若 backup-id 对应的默认 manifest 已存在，则直接加载并标记 resumed；仅在不存在时创建新快照。
+- 自动 resume 测试已补齐，完整测试套件 46/46 全绿。
+- 下一步：提交断点恢复修复，然后继续 P30 迁移。
 
 ## 2026-09-28 恢复记录：目录冷迁移已落地，PikPak Web bootstrap 回归修复中
 

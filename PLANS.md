@@ -7,6 +7,8 @@
 - [x] 实机确认普通非空文件可继续完成 DIRECT 上传与 PikPak COMPLETE。
 - [x] 修复 0 字节文件：不再向 PikPak 创建 resumable task，而是在 manifest 中标记为 manifest-only-empty；恢复时按 manifest 重建空文件。
 - [x] 为 0 字节文件语义补单元测试，并跑完整测试套件。
+- [x] 修复同一 backup-id 重跑时未自动复用默认 manifest 的断点恢复问题。
+- [x] 为默认 manifest 自动 resume 补测试，确保无需手写 --manifest。
 - [ ] 从现有 manifest 断点继续 P30 冷备；已 COMPLETE 的文件跳过，不重复上传。
 - [ ] 全部文件与 portable manifest 完成后，再做云端校验；未经用户明确授权不删除本地 P30 备份。
 

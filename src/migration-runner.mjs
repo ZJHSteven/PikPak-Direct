@@ -23,6 +23,7 @@ import {
   createMigrationManifest,
   inspectLocalEntry,
   loadMigrationManifest,
+  sanitizeBackupId,
   saveMigrationManifest,
 } from './migration-manifest.mjs';
 import { uploadFileToPikPakOss } from './oss-uploader.mjs';
@@ -89,11 +90,29 @@ export async function prepareMigration({
   backupId = null,
   parentId = '',
   route = 'direct-only',
+  manifestDirectory = join(PROJECT_ROOT, 'manifests'),
 }) {
   const absoluteSource = resolve(sourcePath);
   let absoluteManifest = manifestPath ? resolve(manifestPath) : null;
   let manifest;
   let resumed = false;
+
+  // CLI 的正常重跑方式是继续使用同一个 --backup-id。
+  // 旧实现只有显式传 --manifest 才会恢复，导致同一 backup-id 每次都覆盖默认 manifest，
+  // 已经 COMPLETE 的文件状态因此丢失，实际会产生重复上传。
+  //
+  // 这里在“没有显式 manifestPath、但给了 backupId”时先检查默认 manifest。
+  // 如果存在就把它当成权威快照恢复；不存在才创建新的快照。
+  const resolvedManifestDirectory = resolve(manifestDirectory);
+  if (!absoluteManifest && backupId) {
+    const defaultCandidate = join(
+      resolvedManifestDirectory,
+      `${sanitizeBackupId(backupId)}.json`,
+    );
+    if (await pathExists(defaultCandidate)) {
+      absoluteManifest = defaultCandidate;
+    }
+  }
 
   if (absoluteManifest && await pathExists(absoluteManifest)) {
     manifest = await loadMigrationManifest(absoluteManifest);
@@ -114,7 +133,7 @@ export async function prepareMigration({
       parentId,
       route,
     });
-    absoluteManifest ||= join(PROJECT_ROOT, 'manifests', `${manifest.backupId}.json`);
+    absoluteManifest ||= join(resolvedManifestDirectory, `${manifest.backupId}.json`);
     manifest = await saveMigrationManifest(absoluteManifest, manifest);
   }
 
