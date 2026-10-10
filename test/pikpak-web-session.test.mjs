@@ -9,6 +9,7 @@ import vm from 'node:vm';
 import test from 'node:test';
 
 import {
+  PikPakWebSession,
   buildCloudDownloadBody,
   webpackBootstrapExpression,
 } from '../src/pikpak-web-session.mjs';
