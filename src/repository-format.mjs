@@ -97,8 +97,11 @@ export async function initializeRepository(repoDir, {
   if (typeof password !== 'string' || password.length < 8) {
     throw new Error('初始化仓库需要至少 8 个字符的 password。');
   }
-  if (!Number.isSafeInteger(packTargetBytes) || packTargetBytes < 1024 * 1024) {
-    throw new Error('packTargetBytes 至少需要 1 MiB。');
+  // 生产默认仍是 128 MiB；64 KiB 下限只是为了允许测试/诊断仓库快速制造多个 pack。
+  // 这个参数只决定“何时换新 pack”，不改变 pack 二进制格式或加密安全性，因此没有必要
+  // 把 1 MiB 误当成格式级硬限制。
+  if (!Number.isSafeInteger(packTargetBytes) || packTargetBytes < 64 * 1024) {
+    throw new Error('packTargetBytes 至少需要 64 KiB。');
   }
 
   const root = resolve(repoDir);
