@@ -390,6 +390,7 @@ async function cloudPullCommand(args) {
   let tunnel = null;
   let web = null;
   let cloudTask = null;
+  let taskCompleted = false;
 
   try {
     console.log('[1/4] 启动 loopback 单文件 HTTP 源站...');
@@ -424,35 +425,50 @@ async function cloudPullCommand(args) {
       intervalMs: 750,
     });
 
+    const resolvedFileId = cloudTask.fileId || checkIn.fileId || null;
     const result = {
       ok: Boolean(checkIn.allDone),
       localPath: filePath,
       localSize: source.fileSize,
       taskId: cloudTask.taskId,
-      fileId: cloudTask.fileId || null,
+      fileId: resolvedFileId,
       checkIn,
       sourceStats: { ...source.stats },
     };
 
     if (!checkIn.allDone) {
       console.log(JSON.stringify(result, null, 2));
-      throw new Error('Cloud Download 在等待窗口内未完成；taskId 已保留供后续检查。');
+      throw new Error('Cloud Download 在等待窗口内未完成；退出前将清理一次性 task 与未完成文件。');
     }
+    taskCompleted = true;
 
     // 给最后一批正在 flush 的 HTTP stream 一点时间更新 bytesServed，再快照统计。
     await new Promise((resolveWait) => setTimeout(resolveWait, 250));
     result.sourceStats = { ...source.stats };
 
-    if (args.trashAfterSuccess && cloudTask.fileId) {
+    if (args.trashAfterSuccess && resolvedFileId) {
       console.log('      --trash-after-success：清理本次 Route B smoke 文件。');
-      await web.trashFile(cloudTask.fileId);
+      await web.trashFile(resolvedFileId);
       result.trashedAfterSuccess = true;
-    } else if (args.trashAfterSuccess && !cloudTask.fileId) {
+    } else if (args.trashAfterSuccess && !resolvedFileId) {
       console.warn('      [warn] task 响应未给 fileId，无法安全自动清理；不会猜测或按文件名删除。');
     }
 
     console.log('\nCloud Download 结果（公网随机 URL 已省略）：');
     console.log(JSON.stringify(result, null, 2));
+  } catch (error) {
+    // Route B 的 source URL 随 CLI 退出而失效，所以“未完成 task + 已关闭 Tunnel”本身
+    // 就是无法恢复的尾巴。与 Route A/OSS 不同，这里默认先删除本工具自己刚创建的 task，
+    // 并要求 PikPak 一并删除关联的未完成文件，再释放公网入口。
+    if (web && cloudTask?.taskId && !taskCompleted) {
+      try {
+        await web.deleteTasks([cloudTask.taskId], { deleteFiles: true });
+        console.error(`      已清理未完成 Route B task: ${cloudTask.taskId}`);
+      } catch (cleanupError) {
+        console.error(`      [warn] 未完成 task 自动清理失败: ${cleanupError.message}`);
+      }
+    }
+    throw error;
   } finally {
     // 顺序反向释放：先结束控制面，再关公网入口，最后停本地源站。
     if (web) await web.close().catch(() => {});
