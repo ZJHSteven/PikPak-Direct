@@ -8,7 +8,10 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import test from 'node:test';
 
-import { webpackBootstrapExpression } from '../src/pikpak-web-session.mjs';
+import {
+  buildCloudDownloadBody,
+  webpackBootstrapExpression,
+} from '../src/pikpak-web-session.mjs';
 
 function createWebpackRequire(moduleIds) {
   const requireFunction = (id) => ({ id });
@@ -90,6 +93,29 @@ test('所有 runtime 都缺少目标模块时明确失败', () => {
   assert.throws(
     () => runBootstrap(windowObject),
     /capture failed or expected modules are missing/,
+  );
+});
+
+test('Cloud Download 请求体使用 UPLOAD_TYPE_URL 且根目录使用 DOWNLOAD folder_type', () => {
+  assert.deepEqual(
+    buildCloudDownloadBody({ url: 'https://example.test/file.bin' }),
+    {
+      kind: 'drive#file',
+      folder_type: 'DOWNLOAD',
+      upload_type: 'UPLOAD_TYPE_URL',
+      url: { url: 'https://example.test/file.bin' },
+      params: { with_thumbnail: 'true', from: 'manual' },
+    },
+  );
+  const nested = buildCloudDownloadBody({
+    url: 'https://example.test/a',
+    parentId: 'folder-123',
+  });
+  assert.equal(nested.parent_id, 'folder-123');
+  assert.equal('folder_type' in nested, false);
+  assert.throws(
+    () => buildCloudDownloadBody({ url: 'http://127.0.0.1/file' }),
+    /必须是 HTTPS/,
   );
 });
 

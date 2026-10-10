@@ -24,9 +24,11 @@
 
 - [x] 既有真实证据：2026-09-19 的 1 MiB 文件已经通过 127.0.0.1 HTTP -> Cloudflare Quick Tunnel -> PikPak Web Cloud Download -> My Pack 完成。
 - [ ] 盘点当前 Cloud Download Web 控制面调用，优先直接复用/复刻网页内部 API，而不是引入黑盒官方 CLI。
+- [x] 定位当前 Web 控制面：NewFiles 组件调用 webpack module 18839 的 x3，body 为 upload_type=UPLOAD_TYPE_URL + url.url；已据此实现 PikPakWebSession.createCloudDownload()。
 - [x] 复核 2026-09-19 官方 CLI 静态审计：v0.5.1 checksum 与官方一致、Defender 未报已知威胁，但 Windows EXE 未签名且闭源，无法证明零遥测；因此继续维持“不作为默认依赖”的决策。
 - [ ] 若后续确实需要 PikPak 官方 CLI，先在隔离环境审计遥测、自动更新、凭据、网络目的地；能不用则不用。
 - [ ] 实现 cloud-pull：启动 loopback 单文件 HTTP -> Quick Tunnel -> 创建 URL task -> 等待完成 -> 无论成功失败都关闭 Tunnel/HTTP。
+- [x] cloud-pull 第一版代码已落盘：loopback HTTP -> cloudflared Quick Tunnel(--no-autoupdate) -> HEAD 预检 -> Web URL task -> waitTaskComplete -> finally 关闭 Web/Tunnel/HTTP；待离线测试与真实小文件 smoke。
 - [ ] 记录 Range/GET 次数和累计发送字节，避免大文件被多次完整回拉导致上行放大。
 - [ ] Route A 失败进入 Route B 的条件必须显式、可审计；不能静默改变数据路径或放宽安全策略。
 

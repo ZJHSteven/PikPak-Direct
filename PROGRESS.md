@@ -14,6 +14,9 @@
 - Route A 真实 3 路跨进程并发 smoke 已通过：持有期间 PikPak tab 数为 1，三个进程获得同一 targetId；最后一个 holder 退出后 PikPak tab 数变为 0。由此确认“并发复用一个控制面 tab + 最后一个人关门”的实现有效。
 - 独立 9333 无痕登录探针及 9877 Browser Harness 实验服务已全部停止，C:\Temp\pikpak-incognito-probe 已删除，不留临时浏览器/Profile/监听端口。
 - Route B 历史官方 CLI 审计已复核：官方 v0.5.1 二进制 checksum 匹配，但未签 Authenticode、闭源且没有零遥测证据；因此本轮继续选择“Web/API 协议复刻优先，不引入官方 CLI”。
+- Route B 当前 Web 协议已经定位：NewFiles 组件构造 kind=drive#file、upload_type=UPLOAD_TYPE_URL、url.url=<公网链接>，通过 webpack module 18839.x3 创建任务；根目录时 folder_type=DOWNLOAD。已新增 createCloudDownload()，不依赖官方 PikPak CLI。
+- 新增 cloudflared Quick Tunnel 生命周期封装：只接受 loopback HTTP、显式 --no-autoupdate、只保留短日志尾部、不输出随机公网 URL、退出时关闭进程。
+- 新增 cloud-pull CLI 第一版：单文件 HTTP 源站、Quick Tunnel、HEAD 预检、Cloud Download task、任务完成轮询与 source GET/HEAD/Range/bytesServed 统计全部进入同一 try/finally 生命周期。待自动测试与真实 1 MiB smoke。
 
 ## 2026-10-10 手机冷备实战：P30 Route A 已重新验证，发现并修复空文件边界
 

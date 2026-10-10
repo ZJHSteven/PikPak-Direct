@@ -33,6 +33,23 @@ const WEBPACK_MODULES = Object.freeze({
   fileAndTaskApi: 18839,
 });
 
+/** 构造 PikPak Web 当前使用的 Cloud Download / URL 保存请求体。 */
+export function buildCloudDownloadBody({ url, parentId = '' }) {
+  if (!/^https:\/\//i.test(String(url || ''))) {
+    throw new Error('Cloud Download URL 必须是 HTTPS。');
+  }
+  return {
+    kind: 'drive#file',
+    ...(parentId ? { parent_id: parentId } : { folder_type: 'DOWNLOAD' }),
+    upload_type: 'UPLOAD_TYPE_URL',
+    url: { url: String(url) },
+    params: {
+      with_thumbnail: 'true',
+      from: 'manual',
+    },
+  };
+}
+
 /**
  * 对象代表一次 PikPak 上传任务。
  *
@@ -364,6 +381,66 @@ export class PikPakWebSession {
     }
 
     return new PikPakUploadSession(result);
+  }
+
+  /**
+   * 用 PikPak 官方 Web 当前的 Cloud Download 控制面创建 URL 保存任务。
+   *
+   * 2026-10-11 实机 bundle 观察：
+   * - NewFiles 组件把请求构造成 upload_type=UPLOAD_TYPE_URL；
+   * - 通过 file/task API module 18839 的导出 x3 提交；
+   * - 成功结果位于 response.data.value.task。
+   *
+   * 这是“复用官方 Web 会话里的内部模块”，不是承诺长期稳定的公开 API；模块变化时应明确失败。
+   */
+  async createCloudDownload({ url, parentId = '' }) {
+    const body = buildCloudDownloadBody({ url, parentId });
+    const expression = `(async()=>{
+      ${webpackBootstrapExpression()}
+      const fileApi=__ppReq(${WEBPACK_MODULES.fileAndTaskApi});
+      if(typeof fileApi?.x3!=='function'){
+        return {ok:false,errorCode:'WEB_MODULE_CHANGED',errorDescription:'fileApi.x3 missing'};
+      }
+      const response=await fileApi.x3(${JSON.stringify(body)});
+      const data=response?.data?.value||response?.data||response;
+      const error=response?.error?.value||response?.error||null;
+      if(error?.error){
+        return {
+          ok:false,
+          errorCode:error.error||null,
+          errorDescription:error.message||error.error_description||null
+        };
+      }
+      const task=data?.task||null;
+      const file=data?.file||null;
+      if(!task?.id){
+        return {
+          ok:false,
+          errorCode:'TASK_ID_MISSING',
+          errorDescription:'Cloud Download response has no task id'
+        };
+      }
+      return {
+        ok:true,
+        taskId:task.id,
+        fileId:file?.id||task?.file_id||task?.file?.id||'',
+        phase:task?.phase??null,
+        progress:task?.progress??null,
+        name:file?.name||task?.name||''
+      };
+    })()`;
+
+    const evaluation = await this.cdp.call('Runtime.evaluate', {
+      expression,
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    const result = unwrapEvaluation(evaluation);
+    if (!result?.ok) {
+      const detail = result?.errorDescription || result?.errorCode || 'unknown create error';
+      throw new Error(`PikPak 创建 Cloud Download 任务失败: ${detail}`);
+    }
+    return result;
   }
 
   /**

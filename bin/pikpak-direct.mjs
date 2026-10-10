@@ -33,12 +33,15 @@ import { loadMigrationManifest } from '../src/migration-manifest.mjs';
 import { runMigration, verifyManifestLocal } from '../src/migration-runner.mjs';
 import { PikPakWebSession } from '../src/pikpak-web-session.mjs';
 import { discoverAliyunRegion } from '../src/region-discovery.mjs';
+import { createTemporaryFileServer } from '../src/temporary-file-server.mjs';
+import { createQuickTunnel } from '../src/cloudflare-quick-tunnel.mjs';
 
 const DEFAULT_CDP_URL = 'http://127.0.0.1:9222';
 
 function printHelp() {
   console.log(`新增冷迁移命令：
   pikpak-direct migrate <file-or-directory> [--manifest <path>] [--backup-id <id>] [--dry-run]
+  pikpak-direct cloud-pull <local-file>
   pikpak-direct inspect-manifest <manifest.json>
   pikpak-direct verify-local <manifest.json> [--full-hash]
 
@@ -52,6 +55,7 @@ function printHelp() {
 示例：
   node bin/pikpak-direct.mjs upload "D:\\Archive\\example.zip"
   node bin/pikpak-direct.mjs upload "D:\\Archive\\example.zip" --region ap-southeast-1
+  node bin/pikpak-direct.mjs cloud-pull "D:\\Archive\\example.zip"
 
 参数：
   --region <region>               可选人工 override；省略时通过多家 DoH CNAME 共识自动发现。
@@ -79,8 +83,8 @@ function parseArgs(argv) {
   }
 
   const command = argv[0];
-  if (!new Set(['upload', 'migrate', 'inspect-manifest', 'verify-local']).has(command)) {
-    throw new Error(`当前只支持 upload 命令，收到: ${command}`);
+  if (!new Set(['upload', 'cloud-pull', 'migrate', 'inspect-manifest', 'verify-local']).has(command)) {
+    throw new Error(`未知命令: ${command}`);
   }
 
   const localFile = argv[1];
@@ -365,6 +369,99 @@ async function uploadCommand(args) {
 }
 
 /**
+ * Route B：让 PikPak Cloud Download 经一次性 Quick Tunnel 主动回拉本地文件。
+ *
+ * 生命周期故意全部收在一个 try/finally：
+ * 1. loopback 源站；
+ * 2. Quick Tunnel；
+ * 3. Web 控制面创建 URL task；
+ * 4. 等待 COMPLETE；
+ * 5. 无论任何一步成功/失败，都关闭 Web lease、Tunnel 与 HTTP server。
+ */
+async function cloudPullCommand(args) {
+  const filePath = resolve(args.localFile);
+  const fileStat = await stat(filePath);
+  if (!fileStat.isFile()) throw new Error(`cloud-pull 只支持普通文件: ${filePath}`);
+
+  let source = null;
+  let tunnel = null;
+  let web = null;
+  let cloudTask = null;
+
+  try {
+    console.log('[1/4] 启动 loopback 单文件 HTTP 源站...');
+    source = await createTemporaryFileServer({ filePath });
+    console.log(`      ${source.host}:${source.port} / ${formatBytes(source.fileSize)}`);
+
+    console.log('[2/4] 启动一次性 Cloudflare Quick Tunnel（--no-autoupdate）...');
+    // Tunnel 只需要 origin 的 host:port；随机 token 路径稍后拼到公网 base URL。
+    const originBase = `http://${source.host}:${source.port}`;
+    tunnel = await createQuickTunnel({ localUrl: originBase });
+    const publicUrl = `${tunnel.publicBaseUrl}${source.publicPath}`;
+
+    // 先做一次 HEAD：确认公网入口真的能到达本机源站，又不会发送文件正文。
+    const head = await fetch(publicUrl, {
+      method: 'HEAD',
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!head.ok || Number(head.headers.get('content-length')) !== source.fileSize) {
+      throw new Error(`Quick Tunnel HEAD 预检失败: HTTP ${head.status}`);
+    }
+    console.log('      公网 HEAD 预检通过；随机 URL 不写入日志。');
+
+    console.log('[3/4] 通过已登录 PikPak Web 创建 UPLOAD_TYPE_URL 任务...');
+    web = await PikPakWebSession.connect({ cdpUrl: args.cdpUrl });
+    cloudTask = await web.createCloudDownload({
+      url: publicUrl,
+      parentId: args.parentId,
+    });
+    console.log(`      taskId: ${cloudTask.taskId}`);
+    if (cloudTask.fileId) console.log(`      fileId: ${cloudTask.fileId}`);
+
+    console.log('[4/4] 等待 Cloud Download 完成...');
+    const checkIn = await web.waitTaskComplete(cloudTask.taskId, {
+      timeoutMs: args.checkInTimeoutSec * 1000,
+      intervalMs: 750,
+    });
+
+    const result = {
+      ok: Boolean(checkIn.allDone),
+      localPath: filePath,
+      localSize: source.fileSize,
+      taskId: cloudTask.taskId,
+      fileId: cloudTask.fileId || null,
+      checkIn,
+      sourceStats: { ...source.stats },
+    };
+
+    if (!checkIn.allDone) {
+      console.log(JSON.stringify(result, null, 2));
+      throw new Error('Cloud Download 在等待窗口内未完成；taskId 已保留供后续检查。');
+    }
+
+    // 给最后一批正在 flush 的 HTTP stream 一点时间更新 bytesServed，再快照统计。
+    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+    result.sourceStats = { ...source.stats };
+
+    if (args.trashAfterSuccess && cloudTask.fileId) {
+      console.log('      --trash-after-success：清理本次 Route B smoke 文件。');
+      await web.trashFile(cloudTask.fileId);
+      result.trashedAfterSuccess = true;
+    } else if (args.trashAfterSuccess && !cloudTask.fileId) {
+      console.warn('      [warn] task 响应未给 fileId，无法安全自动清理；不会猜测或按文件名删除。');
+    }
+
+    console.log('\nCloud Download 结果（公网随机 URL 已省略）：');
+    console.log(JSON.stringify(result, null, 2));
+  } finally {
+    // 顺序反向释放：先结束控制面，再关公网入口，最后停本地源站。
+    if (web) await web.close().catch(() => {});
+    if (tunnel) await tunnel.close().catch(() => {});
+    if (source) await source.close().catch(() => {});
+  }
+}
+
+/**
  * 把 migration runner 的结构化事件压缩成适合人工观察的终端日志。
  * multipart progress 只按 5% 桶输出一次，避免大文件几千个 part 把终端刷满。
  */
@@ -512,6 +609,8 @@ async function main() {
 
   if (args.command === 'upload') {
     await uploadCommand(args);
+  } else if (args.command === 'cloud-pull') {
+    await cloudPullCommand(args);
   } else if (args.command === 'migrate') {
     await migrateCommand(args);
   } else if (args.command === 'inspect-manifest') {
