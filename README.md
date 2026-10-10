@@ -37,17 +37,18 @@ PikPak-Direct 是一个面向 Windows / Mihomo TUN 环境的实验性上传与�
                                       progress=100 / COMPLETE
 ```
 
-### 路线 B：Cloud Download 反向拉取（PoC 已验证，尚未一键化）
+### 路线 B：Cloud Download 反向拉取（Named Tunnel CLI 已实现）
 
 ```text
 本地文件
    │
    ▼
 loopback-only 临时 HTTP
-127.0.0.1:<random-port>
+127.0.0.1:18765
    │
    ▼
-Cloudflare 临时 Tunnel
+既有 Cloudflare Named Tunnel
+PikPak-RouteB / pikpak-pull.zjhstudio.com
    │        PikPak 主动 GET
    └────────────────────────> PikPak Cloud Download
                                   │
@@ -56,8 +57,12 @@ Cloudflare 临时 Tunnel
 ```
 
 这条路线的意义是把正文从“普通 Upload”变成“Cloud Download 从公网 URL 保存”。
-当前已验证的是数据路径本身；Tunnel 生命周期和 PikPak Web 创建任务还没有封装成
-`cloud-pull` 一键命令，因此 README 不把它宣传成已完成 CLI。
+正式实现固定复用已有 `PikPak-RouteB` Named Tunnel 与 DNS 映射；每次任务只临时启动
+`127.0.0.1:18765` 单文件 origin 与 connector，**不会动态创建 Quick Tunnel，也不会修改 DNS**。
+`cloud-pull` 已封装 origin、connector、HEAD gate、Cloud Download task、失败清理与正文读取预算。
+
+Route B 默认最多允许向公网发送源文件大小的 4 倍正文；超预算 GET 会在发送正文前拒绝，
+避免历史实验中观察到的重复 Range/GET 把上行量无限放大。
 
 ## 为什么不用 WebDAV 做主上传
 
@@ -89,10 +94,10 @@ WebDAV 仍然适合把 PikPak 挂成浏览盘、管理文件和偶尔传小文�
 
 速度仅代表当时网络样本，不作为性能承诺。
 
-2026-09-19 Cloud Download 实验：
+2026-09-19 Cloud Download 历史实验：
 
 - 本地源站仅监听 `127.0.0.1`；
-- 独立 Cloudflare Quick Tunnel 成功提供公网 HTTPS；
+- 当时用独立 Cloudflare Quick Tunnel 成功提供公网 HTTPS；该方法只保留为历史 PoC 证据，正式代码已删除；
 - PikPak Web Cloud Download 创建任务后，本地源站真实收到 4 次远端 GET；
 - 文件最终出现在 `My Pack/smoke-1m.bin`；
 - 测试后远端文件、Quick Tunnel 和临时 HTTP 服务均已清理；
@@ -181,10 +186,37 @@ npm run probe:web-upload -- --route direct --region ap-southeast-1 --size-mib 8
 
 该探针生成随机测试数据，并在成功/失败后尝试清理自己创建的测试文件。
 
+## 加密仓库 v1
+
+当前 CLI 已具备独立于具体数据源的客户端加密仓库：
+
+- 随机 256-bit master key；password slot + recovery slot 只负责包装 master key；
+- scrypt + HKDF-SHA256 密钥分层，AES-256-GCM 认证加密；
+- FastCDC 风格内容定义分块，Brotli-or-none 压缩后写入不可变 pack；
+- pack 尾部加密 TOC，可在本地索引全部丢失后重新扫描并重建 chunk index；
+- snapshot 将原始路径、文件名、mtime、whole-file hash 与 chunk 引用整体加密；
+- `repo.json` 的公开格式字段也有 master-key 派生的认证封印，篡改会在解锁后被拒绝；
+- PikPak 远端默认固定可见根目录 `PikPak-Direct Vault`，只存 `repo.json`、随机 pack、随机 snapshot；
+- fresh machine 可从 PikPak `repo-pull` 后，仅凭 recovery key 重建索引、full verify 并恢复文件。
+
+主要命令：
+
+```text
+repo-init     初始化仓库并把 recovery key 写到仓库外的独立文件
+repo-backup   生成增量 snapshot / 新 pack
+repo-list     枚举可恢复 snapshot
+repo-verify   快速或全量密码学校验
+repo-restore  恢复指定/最新 snapshot
+repo-push     经 Route A 增量推送 immutable 仓库对象到 PikPak
+repo-pull     从 PikPak 重新物化仓库并立即校验
+```
+
+仓库 password / recovery key 不接受 CLI 明文参数，只从运行时环境/Secret 注入，避免进入 shell history 与进程命令行。
+
 ## 当前阶段
 
 阶段 1“实验固化”已经完成；阶段 2“正式 CLI MVP”已有可工作的 OSS 单文件上传；
-同时正在推进 **阶段 6：Cloud Download 反向拉取工具化**。
+同时已完成 **Route B Named Tunnel 工具化** 与 **加密仓库 v1 的本地/云端灾难恢复闭环**。
 
 已经具备：
 
@@ -194,21 +226,19 @@ npm run probe:web-upload -- --route direct --region ap-southeast-1 --size-mib 8
 4. 多 DoH 共识自动发现 region；
 5. Node `ali-oss` 原生 multipart；
 6. secret 默认脱敏；
-7. 28 个离线单元测试；
+7. 持续扩展的离线回归测试套件；
 8. 真实 8 MiB Node CLI smoke test 完整成功；
 9. loopback-only 临时单文件 HTTP 源站（随机 URL、HEAD/Range、发送字节统计）；
-10. Cloudflare Tunnel -> PikPak Cloud Download -> `My Pack` 的 1 MiB 真实 smoke test。
+10. 固定 Named Tunnel 的 `cloud-pull` 实现与 4x 正文读取硬预算；
+11. repository v1 的 password/recovery 双 key slot、CDC、pack、snapshot、索引重建与恢复；
+12. 真实 PikPak cloud repository round-trip：Route A 推送 `repo.json + pack + snapshot`，删除本地 repo 后从 PikPak pull，仅凭 recovery key full verify + restore/hash 成功。
 
-尚未完成：
+仍属于后续增强而不是当前 CLI v1 阻塞项：
 
-- 目录递归与远端目录创建；
-- 持久 manifest；
-- 持久 multipart checkpoint / pause / resume；
-- STS 超过约 12 小时后的可靠换证；
-- 冷仓扫描、校验和本地观察期删除流程。
-- Cloud Download 的 Tunnel 自动生命周期；
-- PikPak Web Cloud Download 控制面的一键自动化；
-- 目录流式归档、客户端加密、SQLite manifest 与增量分块。
+- STS 超过约 12 小时后的可靠换证与超长单对象预警；
+- P30 既有明文 migration manifest 的剩余数据迁移/云端核对；
+- D 盘候选扫描、观察期删除等面向具体数据源的运维流程；
+- Route B Named Tunnel 的真实 token 注入 E2E 证据目前受宿主安全门禁阻止；实现本身已完成，且不会回退 Quick Tunnel。
 
 此外，当前 PikPak Web 前端对桌面文件有 20GiB UI 限制，但 create-task 后端已实测接受 21GiB 与 100GiB 声明任务；这不等于 100GiB+ 单文件已获得长期稳定支持，因为 STS 生命周期仍需解决。
 

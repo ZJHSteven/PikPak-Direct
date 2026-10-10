@@ -1,5 +1,9 @@
 # 2026-09-19 Cloud Download 反向拉取实验
 
+> **历史实验说明（2026-10-11）**：本页记录的是当时用于证明“PikPak 可以主动回拉本机文件”的 Quick Tunnel PoC。
+> 正式实现已经改为复用长期保存的 `PikPak-RouteB` Named Tunnel / DNS 映射；项目中的 Quick Tunnel 可执行模块与单测已删除，
+> 不得把本页步骤当成当前运行手册。保留本页仅用于审计实验来源和解释为什么 Route B 可行。
+
 ## 目的
 
 验证以下链路是否真实可行：
@@ -106,7 +110,7 @@ My Pack/smoke-1m.bin
 1. **反向拉取链路真实可行。**
 2. PikPak Cloud Download 可以通过 Cloudflare Tunnel 主动读取本机临时 HTTP 文件。
 3. 这条路径不要求本机向 PikPak 上传数据面 endpoint 建立长时间大流量连接。
-4. Quick Tunnel 可以只在单次任务期间存在，任务结束后立即关闭。
+4. 当时的 Quick Tunnel 可以只在单次任务期间存在；这一点后来演化为“固定 Named Tunnel 映射常驻、connector/origin 只在任务期间存在”。
 5. 因为测试是从 PikPak 官方 Web 创建 Cloud Download，控制面没有引入额外 Connected App 凭据。
 
 ### 尚未确认
@@ -115,7 +119,7 @@ My Pack/smoke-1m.bin
    Range/HEAD 支持与日志，判断大文件时是探测、重试还是会造成重复完整读取。
 2. 尚未通过“Transfer Quota Details”做前后差分，因此不能仅凭架构断言该流量
    最终一定按哪一个 Connected Apps / Web 子分类计费。
-3. 当前实验用的是 Cloudflare Quick Tunnel；自有域名 / named tunnel 尚未接入。
+3. **历史当时状态**：本实验用的是 Cloudflare Quick Tunnel；截至 2026-10-11 正式实现已接入 `PikPak-RouteB` Named Tunnel + 自有域名，此项不再是当前缺口。
 4. 当前仅验证单文件；目录打包、持久 manifest、加密、增量均未实现。
 
 ## 下一步

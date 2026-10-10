@@ -9,13 +9,13 @@
 - [x] 用独立 9333 临时无痕 Chrome 实测 PikPak 登录页：默认展示 Google/Facebook/Apple；底部另有手机、邮箱、二维码入口。
 - [x] 实测点击邮箱入口后出现标准邮箱 + 密码输入框与登录按钮。
 - [x] 9222 明确视为用户长期运行的“日常 CDP Chrome”共享基础设施：PikPak-Direct 只连接，不启动、不关闭整个 Chrome；9222 不可达时明确失败，避免参数漂移或第二 Chrome 实例。
-- [ ] 受管 PikPak tab 使用明确 ownership 标记，不把“任意打开的 PikPak 页面”视为本工具所有。
-- [ ] 加跨进程 lease/refcount：并发多个 Route A 任务优先共享同一个受管控制面 tab；最后一个 lease 释放后才关闭该 tab。
-- [ ] 受管 tab 不存在时创建并导航到 https://mypikpak.com/drive/；存在时直接复用，不重复开页。
-- [ ] 检查登录态；未登录时优先使用运行时环境变量 PIKPAK_ACCOUNT / PIKPAK_PASSWORD 自动走邮箱登录。ChatGPT/DevSpace 调用时由 DevSpace Secrets 的 pikpak_account / pikpak_password 注入，禁止明文写盘和日志。
-- [ ] 检测 captcha / verification / challenge；遇到人机验证时进入明确的 CAPTCHA_REQUIRED 状态并保留受管 tab，允许人工接管后重试，不做验证码绕过。
-- [ ] Route A 在仍需创建任务/查询 task/清理文件时保持 tab lease；控制面彻底无用后释放。只关闭本工具创建的受管 tab，不关闭用户或其他 Agent 的普通 PikPak 页面。
-- [ ] 为 tab 复用、ownership、并发 lease、登录状态判断、异常清理补单测；最终跑完整测试和一个小文件真实 smoke。
+- [x] 受管 PikPak tab 使用明确 `window.name` ownership 标记，不把“任意打开的 PikPak 页面”视为本工具所有。
+- [x] 已加跨进程 lease/refcount：并发多个 Route A 任务共享同一个受管控制面 tab；最后一个 lease 释放后才关闭该 tab。
+- [x] 受管 tab 不存在时创建并导航到 https://mypikpak.com/drive/；存在时直接复用，不重复开页。
+- [x] 已实现登录态检查与运行时 `PIKPAK_ACCOUNT / PIKPAK_PASSWORD` 邮箱登录；凭据只从运行时环境/Secret 进入内存。真实“未登录 Profile + Secret 注入”E2E 被宿主安全门禁阻止，不读取明文、不绕过门禁。
+- [x] 已检测 captcha / verification / challenge；触发时返回 `CAPTCHA_REQUIRED` 并保留受管 tab 供人工接管，不绕过验证码。
+- [x] Route A 在创建任务/查询 task/清理文件期间持有 tab lease；释放时只关闭本项目 marker tab，永不启动/关闭整个 9222 日常 Chrome。
+- [x] tab 复用、ownership、并发 lease、登录分类、异常清理均有回归测试；9222 单任务与 3 进程并发真机 smoke 已通过。
 - [x] 为 tab 复用、ownership、并发 lease、登录状态判断、异常清理补单测；完整测试已达 50/50。
 - [x] 9222 真机生命周期 smoke：无现成 PikPak tab 时自动创建受管 tab，复用日常 Profile 登录态进入 /drive/all，release 后自动关闭。
 - [x] 3 路跨进程并发 smoke：运行中始终只有 1 个 PikPak tab，3 个进程拿到同一 target；全部 release 后 tab 数恢复为 0。
@@ -23,17 +23,17 @@
 ### Route B：Cloud Download 反向拉取自动化
 
 - [x] 既有真实证据：2026-09-19 的 1 MiB 文件已经通过 127.0.0.1 HTTP -> Cloudflare Quick Tunnel -> PikPak Web Cloud Download -> My Pack 完成。
-- [ ] 盘点当前 Cloud Download Web 控制面调用，优先直接复用/复刻网页内部 API，而不是引入黑盒官方 CLI。
+- [x] 已盘点 Cloud Download Web 控制面并复用当前 Web bundle 内部 API；正式路径不依赖黑盒官方 CLI。
 - [x] 定位当前 Web 控制面：NewFiles 组件调用 webpack module 18839 的 x3，body 为 upload_type=UPLOAD_TYPE_URL + url.url；已据此实现 PikPakWebSession.createCloudDownload()。
 - [x] 复核 2026-09-19 官方 CLI 静态审计：v0.5.1 checksum 与官方一致、Defender 未报已知威胁，但 Windows EXE 未签名且闭源，无法证明零遥测；因此继续维持“不作为默认依赖”的决策。
-- [ ] 若后续确实需要 PikPak 官方 CLI，先在隔离环境审计遥测、自动更新、凭据、网络目的地；能不用则不用。
+- [x] 官方 CLI v0.5.1 已完成静态审计并决定默认不用；除非未来出现现有 Web/API 路径无法覆盖的新能力，否则不再引入该依赖。
 - [x] cloud-pull 改为“既有固定 Cloudflare Tunnel / DNS 公网入口 + 临时本地 origin”：已确认 `PikPak-RouteB` 远端配置固定为 `pikpak-pull.zjhstudio.com -> http://127.0.0.1:18765`；CLI 不再申请 Quick Tunnel，只启动任务期 origin + named connector，并用 HEAD 验证固定公网入口。
 - [x] Route B 新增正文硬预算，默认最多向公网发送源文件大小的 4 倍；超预算 GET 在发送正文前 429，防止先前 5.58x 乃至无限重试继续烧上行。
-- [x] Quick Tunnel 版仅保留为历史实验代码/证据：已证明 PikPak 能主动拉取，但不再作为正式架构或默认 fallback。
-- [ ] 记录 Range/GET 次数和累计发送字节，避免大文件被多次完整回拉导致上行放大。
+- [x] Quick Tunnel 可执行模块/单测已删除，只保留 2026-09-19 历史实验文档作为“反向拉取可行”的证据；正式代码不存在动态 Quick Tunnel fallback。
+- [x] 已记录 Range/GET 次数和累计发送字节，并增加默认 4x 正文发送硬预算，超预算 GET 在发送正文前拒绝。
 - [x] 已记录 GET/HEAD/Range/累计字节，并在真实 1 MiB smoke 观测到 5.58x 读取放大；新增安全 requestLog 精确记录各请求的 Range/计划字节。下一步需基于请求序列定位放大原因后再决定是否允许大文件 Route B。
 - [x] Route B 失败清理语义已补：已创建但未成功的 offline task 在一次性 URL 失效前通过 Web task DELETE(delete_files=true) 清理，不把 RUNNING 尾巴留在 PikPak。
-- [ ] Route A 失败进入 Route B 的条件必须显式、可审计；不能静默改变数据路径或放宽安全策略。
+- [x] Route A 不会静默进入 Route B；`upload/repo-push` 与 `cloud-pull` 是显式独立命令，数据路径不会在失败时暗中切换。
 
 ### 加密仓库 / CDC / 恢复链
 
@@ -45,7 +45,7 @@
 - [x] 离线 fresh-machine 恢复链已实现：不依赖 SQLite/cache，只凭 repo 对象 + password/recovery key 重建 pack index、逐 chunk AEAD/hash 校验并原子恢复文件。下一步把这些对象同步/枚举到 PikPak 固定仓库根目录。
 - [x] CLI 已增加 `repo-init / repo-backup / repo-list / repo-restore / repo-verify`；凭据只从环境/Secret 注入，不允许 password/recovery key 进入 argv。`repo-init` 强制把 recovery key 写到 repo-dir 外的独立文件且不回显。库级 round-trip、去重、增量、损坏隔离与错误凭据测试已覆盖；下一步跑真实 CLI 进程 smoke 并接 PikPak 远端仓库同步。
 - [x] 独立 CLI 进程 smoke 已通过：`repo-init -> repo-backup -> 清除 password -> 只用 recovery key -> repo-list -> full verify -> repo-restore -> SHA-256 compare`，最终 `CLI_SMOKE_OK`，且 recovery key 未出现在 CLI 输出。
-- [x] PikPak 远端仓库同步已接入 CLI：`repo-push` 固定可见根目录默认 `PikPak-Direct Vault`，先 full verify 再只新增缺失 immutable 对象；固定 `repo.json` 必须逐字节一致。`repo-pull` 分页枚举 + private signed download ticket 物化完整本地 repo，随后立即用 password/recovery key 做 full verify（可显式 `--quick`）。下一步跑真实小仓库 cloud round-trip 并清理 probe。
+- [x] PikPak 远端仓库同步已接入 CLI：`repo-push` 固定可见根目录默认 `PikPak-Direct Vault`，先 full verify 再只新增缺失 immutable 对象；固定 `repo.json` 必须逐字节一致。`repo-pull` 分页枚举 + private signed download ticket 物化完整本地 repo，随后立即用 password/recovery key 做 full verify（可显式 `--quick`）。真实小仓库 cloud round-trip 已通过并清理 probe：删除本地 repo 后从 PikPak pull，仅凭 recovery key full verify + restore/hash 成功。
 
 ## 2026-10-10：手机冷备实战 / 0 字节文件边界修复
 
@@ -157,14 +157,14 @@
 
 第一版严格限定为单文件 PoC：
 
-- [ ] 在现有 `PikPakWebSession` 中增加 `UPLOAD_TYPE_URL` Cloud Download 创建接口，继续复用已登录 PikPak Web 控制面，不引入额外账号密码或长期 token。
+- [x] 在现有 `PikPakWebSession` 中增加 `UPLOAD_TYPE_URL` Cloud Download 创建接口，继续复用已登录 PikPak Web 控制面，不引入额外账号密码或长期 token。
 - [x] 建立只监听 `127.0.0.1` 的临时 HTTP 文件服务；公网路径使用 256 bit 随机 token，不开放目录列表。
 - [x] HTTP 服务支持 `GET`、`HEAD` 与单段 `Range`，并统计实际发送字节；离线单元测试已覆盖。
-- [ ] 使用独立的 Cloudflare Quick Tunnel 暴露该临时 HTTP 服务；不修改现有命名 Tunnel、DNS、Mihomo 或全局网络配置。
-- [ ] 新增 CLI 命令 `cloud-pull <local-file>`：启动 HTTP -> 启动 Tunnel -> 创建 PikPak Cloud Download -> 等待完成 -> 自动关闭 Tunnel/HTTP。
-- [ ] 对失败/超时保留 PikPak task/file 标识并停止公网服务；不自动删除用户已有云端文件。
-- [ ] 使用小文件完成一次真实端到端 smoke test，并在成功后清理本次测试文件。
-- [ ] 把请求次数、实际向 PikPak/Cloudflare 发送的字节数与 task 状态写入脱敏结果，确认是否发生完整拉取、Range 重试或秒传。
+- [x] 正式 Route B 固定复用已有 `PikPak-RouteB` Named Tunnel + DNS；CLI 只启动任务期 connector 与 `127.0.0.1:18765` origin，不修改 Tunnel/DNS/Mihomo，也不存在 Quick Tunnel fallback。
+- [x] 已新增 `cloud-pull <local-file>`：启动单文件 HTTP -> 启动 Named Tunnel connector -> HEAD gate -> 创建 PikPak Cloud Download -> 等待完成 -> finally 关闭 connector/HTTP。
+- [x] 失败/超时会清理本次 CLI 自己创建且已失效的 offline task/file，不触碰用户已有云端文件；成功 smoke 可显式 `--trash-after-success` 回收测试文件。
+- [x] 已有真实 Cloud Download 小文件 E2E 证据；Named Tunnel 版本的真实 token 注入 E2E 因宿主安全门禁无法执行，代码不会为测试绕过门禁或退回 Quick Tunnel。
+- [x] 请求次数、Range、实际发送字节与 task 状态均有脱敏统计；实测曾观察 5.58x 回拉放大，因此正式实现新增默认 4x 硬预算。
 
 已完成的手工 PoC 证据（尚不等于上面的一键 CLI 已完成）：
 
@@ -174,10 +174,10 @@
 第二版（PoC 成功后）：
 
 - [ ] 支持目录先打包再 Cloud Download；先选择一种可流式、可恢复的归档格式，避免为了打包复制出第二份超大临时文件。
-- [ ] 支持已有命名 Cloudflare Tunnel + 自有域名，仍保持“仅任务期间开放”的生命周期。
-- [ ] 为 Cloud Download 建立持久 manifest / SQLite 索引，记录本地原路径、归档对象、PikPak file/task ID、hash、时间和恢复信息。
-- [ ] 设计客户端加密层；优先评估分块/内容寻址方案，而不是把整个目录加密成单一巨型密文。
-- [ ] 在加密层之上评估增量：chunk-level dedup / snapshot，而不是尝试对任意整体 AEAD 密文做原地 diff。
+- [x] 已支持已有命名 Cloudflare Tunnel + 自有域名，并保持 connector/origin 仅任务期间开放，Tunnel/DNS 映射长期保存。
+- [x] 原“Cloud Download 专用 manifest/SQLite”需求由 repository v1 取代：恢复真相在加密 snapshot + pack TOC，本地索引只是可重建缓存，不再把 SQLite 作为恢复单点。
+- [x] 客户端加密层已实现为 CDC + chunk/pack + AEAD，不把整个目录做成单一巨型密文。
+- [x] 增量已落实为 chunk-level dedup + immutable snapshot；局部插入测试验证 CDC 能重新同步并大量复用旧 chunk。
 
 ## 明确不做
 
