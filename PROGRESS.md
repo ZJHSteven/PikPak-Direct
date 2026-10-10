@@ -9,6 +9,11 @@
 - Route A 下一步实现受管 Browser/Tab Lease：默认复用 9222 日常 Chrome；受管 tab 用 ownership 标记 + 跨进程 refcount 共享，防止并发任务重复开 tab 或互相关页；最后一个 lease 退出时才关闭本工具创建的 tab。
 - Route B 不是从零开始：2026-09-19 的 1 MiB 反向拉取 E2E 已有真实证据；当前缺口是把“手工 Quick Tunnel + Web 提交 URL”做成 cloud-pull CLI，并尽量直接复用 Web/API 控制面而非黑盒官方 CLI。
 - Route A 浏览器生命周期代码已落盘：新增受管 tab marker、跨进程 holder/refcount、9222 不可达时按固定 Chrome-CDP Profile 自动启动、邮箱登录 DOM 自动化、captcha 检测与保留 tab 的人工接管语义；PikPakWebSession.close() 改为异步释放 lease，upload/migrate 调用方均等待清理完成。待本轮完整测试与真实 9222 smoke 后再标记完成。
+- Route A 离线自动测试现为 50/50 全绿。
+- Route A 真实 9222 单任务 smoke 已通过：日常 Chrome 起初没有 PikPak 页面，acquire 自动创建受管 tab 并进入 https://mypikpak.com/drive/all，证明当前日常 Profile 登录态可直接复用；release 后该受管 tab 被关闭。
+- Route A 真实 3 路跨进程并发 smoke 已通过：持有期间 PikPak tab 数为 1，三个进程获得同一 targetId；最后一个 holder 退出后 PikPak tab 数变为 0。由此确认“并发复用一个控制面 tab + 最后一个人关门”的实现有效。
+- 独立 9333 无痕登录探针及 9877 Browser Harness 实验服务已全部停止，C:\Temp\pikpak-incognito-probe 已删除，不留临时浏览器/Profile/监听端口。
+- Route B 历史官方 CLI 审计已复核：官方 v0.5.1 二进制 checksum 匹配，但未签 Authenticode、闭源且没有零遥测证据；因此本轮继续选择“Web/API 协议复刻优先，不引入官方 CLI”。
 
 ## 2026-10-10 手机冷备实战：P30 Route A 已重新验证，发现并修复空文件边界
 

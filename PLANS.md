@@ -16,11 +16,15 @@
 - [ ] 检测 captcha / verification / challenge；遇到人机验证时进入明确的 CAPTCHA_REQUIRED 状态并保留受管 tab，允许人工接管后重试，不做验证码绕过。
 - [ ] Route A 在仍需创建任务/查询 task/清理文件时保持 tab lease；控制面彻底无用后释放。只关闭本工具创建的受管 tab，不关闭用户或其他 Agent 的普通 PikPak 页面。
 - [ ] 为 tab 复用、ownership、并发 lease、登录状态判断、异常清理补单测；最终跑完整测试和一个小文件真实 smoke。
+- [x] 为 tab 复用、ownership、并发 lease、登录状态判断、异常清理补单测；完整测试已达 50/50。
+- [x] 9222 真机生命周期 smoke：无现成 PikPak tab 时自动创建受管 tab，复用日常 Profile 登录态进入 /drive/all，release 后自动关闭。
+- [x] 3 路跨进程并发 smoke：运行中始终只有 1 个 PikPak tab，3 个进程拿到同一 target；全部 release 后 tab 数恢复为 0。
 
 ### Route B：Cloud Download 反向拉取自动化
 
 - [x] 既有真实证据：2026-09-19 的 1 MiB 文件已经通过 127.0.0.1 HTTP -> Cloudflare Quick Tunnel -> PikPak Web Cloud Download -> My Pack 完成。
 - [ ] 盘点当前 Cloud Download Web 控制面调用，优先直接复用/复刻网页内部 API，而不是引入黑盒官方 CLI。
+- [x] 复核 2026-09-19 官方 CLI 静态审计：v0.5.1 checksum 与官方一致、Defender 未报已知威胁，但 Windows EXE 未签名且闭源，无法证明零遥测；因此继续维持“不作为默认依赖”的决策。
 - [ ] 若后续确实需要 PikPak 官方 CLI，先在隔离环境审计遥测、自动更新、凭据、网络目的地；能不用则不用。
 - [ ] 实现 cloud-pull：启动 loopback 单文件 HTTP -> Quick Tunnel -> 创建 URL task -> 等待完成 -> 无论成功失败都关闭 Tunnel/HTTP。
 - [ ] 记录 Range/GET 次数和累计发送字节，避免大文件被多次完整回拉导致上行放大。
