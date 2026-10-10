@@ -152,9 +152,21 @@ async function targetHasMarker(target) {
 
 async function findManagedTarget(cdpUrl, preferredTargetId = null) {
   const targets = (await listTargets(cdpUrl)).filter((target) => target.type === 'page');
-  const ordered = preferredTargetId
-    ? [...targets.filter((t) => t.id === preferredTargetId), ...targets.filter((t) => t.id !== preferredTargetId)]
-    : targets;
+  // 9222 是用户长期使用的日常 Chrome，可能同时存在几十/上百个普通页面。旧实现当
+  // state.targetId 丢失时会逐个连所有 page target，只为了读 window.name；任何一个页面
+  // 的 CDP WebSocket 异常都可能拖住整个 acquire，而且无意义地触碰了用户所有日常 Tab。
+  //
+  // 受管 PikPak tab 在正常状态下一定满足以下两种情况之一：
+  // 1. lease state 仍保存精确 targetId（包括刚 createTarget 后尚处于 about:blank 的短窗口）；
+  // 2. state 丢失/进程重启，但页面已经导航到 mypikpak.com/drive，可通过 URL 缩小候选集。
+  // 因此只检查 preferred target + PikPak Drive 页面，普通网页连 WebSocket 都不会打开。
+  const preferred = preferredTargetId
+    ? targets.filter((target) => target.id === preferredTargetId)
+    : [];
+  const pikpakCandidates = targets.filter(
+    (target) => target.id !== preferredTargetId && String(target.url || '').includes('mypikpak.com/drive'),
+  );
+  const ordered = [...preferred, ...pikpakCandidates];
   for (const target of ordered) {
     if (await targetHasMarker(target)) return target;
   }
