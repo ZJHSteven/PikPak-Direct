@@ -459,7 +459,10 @@ export class PikPakWebSession {
         progress:task?.progress??null,
         phase:task?.phase??null,
         error:task?.error??null,
-        message:task?.message??null
+        message:task?.message??null,
+        fileId:task?.file_id||task?.file?.id||'',
+        fileName:task?.file_name||task?.file?.name||task?.name||'',
+        fileSize:task?.file_size??task?.file?.size??null
       };
     })()`;
 
@@ -470,6 +473,41 @@ export class PikPakWebSession {
     });
 
     return unwrapEvaluation(evaluation);
+  }
+
+  /**
+   * 删除一个或多个 offline / Cloud Download task。
+   *
+   * 2026-10-11 当前 Web bundle 中 module 18839.vq 对应：
+   * DELETE /tasks?delete_files=<bool>&task_ids=<id>...
+   *
+   * Route B 的公网 URL 是一次性的；如果 CLI 已决定关闭 Tunnel，而 task 又没有成功，
+   * 保留一个指向失效 URL 的 RUNNING task 没有恢复价值，因此 cloud-pull 的失败路径会
+   * 用 deleteFiles=true 清理 task 与关联的未完成文件。
+   */
+  async deleteTasks(taskIds, { deleteFiles = true } = {}) {
+    const ids = Array.from(new Set((taskIds || []).filter(Boolean)));
+    if (ids.length === 0) return;
+
+    const expression = `(async()=>{
+      ${webpackBootstrapExpression()}
+      const fileApi=__ppReq(${WEBPACK_MODULES.fileAndTaskApi});
+      if(typeof fileApi?.vq!=='function'){
+        return {ok:false,error:'fileApi.vq missing'};
+      }
+      await fileApi.vq(${JSON.stringify(ids)},${deleteFiles ? 'true' : 'false'});
+      return {ok:true};
+    })()`;
+
+    const evaluation = await this.cdp.call('Runtime.evaluate', {
+      expression,
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    const result = unwrapEvaluation(evaluation);
+    if (!result?.ok) {
+      throw new Error(`PikPak 删除 task 失败: ${result?.error || 'unknown'}`);
+    }
   }
 
   /**
