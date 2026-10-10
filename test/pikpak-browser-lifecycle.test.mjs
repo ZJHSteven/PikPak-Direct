@@ -8,6 +8,7 @@ import {
   PIKPAK_MANAGED_WINDOW_NAME,
   buildEmailLoginExpression,
   classifyPikPakAuthSnapshot,
+  isIgnorableBrowserPageUrl,
   parseLocalCdpUrl,
 } from '../src/pikpak-browser-lifecycle.mjs';
 
@@ -34,4 +35,12 @@ test('邮箱登录表达式正确转义测试凭据且不把密码写进返回�
 
 test('受管 tab marker 稳定且有项目命名空间', () => {
   assert.match(PIKPAK_MANAGED_WINDOW_NAME, /^pikpak-direct:/);
+});
+
+test('浏览器级 idle-close 只把真正空白页视为可忽略，不会误关普通页面', () => {
+  assert.equal(isIgnorableBrowserPageUrl('about:blank'), true);
+  assert.equal(isIgnorableBrowserPageUrl('chrome://newtab/'), true);
+  assert.equal(isIgnorableBrowserPageUrl('chrome://new-tab-page/'), true);
+  assert.equal(isIgnorableBrowserPageUrl('https://mypikpak.com/drive/all'), false);
+  assert.equal(isIgnorableBrowserPageUrl('https://example.com/'), false);
 });

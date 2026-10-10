@@ -12,6 +12,7 @@
 - Route A 离线自动测试现为 50/50 全绿。
 - Route A 真实 9222 单任务 smoke 已通过：日常 Chrome 起初没有 PikPak 页面，acquire 自动创建受管 tab 并进入 https://mypikpak.com/drive/all，证明当前日常 Profile 登录态可直接复用；release 后该受管 tab 被关闭。
 - Route A 真实 3 路跨进程并发 smoke 已通过：持有期间 PikPak tab 数为 1，三个进程获得同一 targetId；最后一个 holder 退出后 PikPak tab 数变为 0。由此确认“并发复用一个控制面 tab + 最后一个人关门”的实现有效。
+- Route A 浏览器级生命周期继续收口：ensureCdpAvailable 现在在跨进程 lease lock 内执行，避免 9222 不可达时并发 CLI 重复 spawn Chrome；若 Chrome 确由本工具启动，则最后一个 holder 会先关受管 PikPak tab，再检查剩余 page targets。只有全部只是 about:blank/Chrome New Tab 才 Browser.close；一旦发现任何外来页面，立即放弃 browser ownership，今后也不会伺机误关这个已共享的 Chrome。
 - 独立 9333 无痕登录探针及 9877 Browser Harness 实验服务已全部停止，C:\Temp\pikpak-incognito-probe 已删除，不留临时浏览器/Profile/监听端口。
 - Route B 历史官方 CLI 审计已复核：官方 v0.5.1 二进制 checksum 匹配，但未签 Authenticode、闭源且没有零遥测证据；因此本轮继续选择“Web/API 协议复刻优先，不引入官方 CLI”。
 - Route B 当前 Web 协议已经定位：NewFiles 组件构造 kind=drive#file、upload_type=UPLOAD_TYPE_URL、url.url=<公网链接>，通过 webpack module 18839.x3 创建任务；根目录时 folder_type=DOWNLOAD。已新增 createCloudDownload()，不依赖官方 PikPak CLI。

@@ -2,6 +2,8 @@
 //
 // 这个模块只管理“控制面”：确保一个可连接的本机 CDP Chrome 存在、复用本工具创建的
 // PikPak 标签页、必要时完成邮箱密码登录，并在最后一个使用者退出后只关闭本工具自己的 tab。
+// 如果 Chrome 本身也是本工具启动的，则还会在“没有任何外来页面”的前提下关闭整个浏览器；
+// 一旦观察到其他 Agent/用户页面，就主动放弃浏览器级 ownership，绝不为了省内存误关别人的工作。
 // 上传正文仍然完全由 Node -> Aliyun OSS 完成，绝不会经过这里。
 
 import { spawn } from 'node:child_process';
@@ -32,6 +34,17 @@ export function parseLocalCdpUrl(cdpUrl) {
   const port = Number(url.port || 80);
   if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
   return { host: url.hostname, port };
+}
+
+/**
+ * 判断一个 page target 是否只是 Chrome 启动时自动留下的空白页。
+ * 只有这些页面存在时，本工具才允许关闭自己启动的整个 Chrome。
+ */
+export function isIgnorableBrowserPageUrl(url) {
+  const value = String(url || '').replace(/\/$/, '');
+  return value === 'about:blank'
+    || value === 'chrome://newtab'
+    || value === 'chrome://new-tab-page';
 }
 
 /** 进程仍存活时返回 true；EPERM 也视为“活着但无权发信号”。 */
@@ -199,6 +212,29 @@ async function closeManagedTarget(cdpUrl, targetId) {
   try {
     const result = await browser.call('Target.closeTarget', { targetId });
     return Boolean(result?.success);
+  } finally {
+    browser.close();
+  }
+}
+
+/**
+ * 仅在不存在外来 page target 时关闭整个 Browser。
+ *
+ * 调用方必须已经确认这个 Chrome 是 PikPak-Direct 自己启动的。这里仍做第二层保护：
+ * 任何非 about:blank / Chrome New Tab 的页面都会阻止 Browser.close。
+ */
+async function closeOwnedBrowserIfIdle(cdpUrl) {
+  const pages = (await listTargets(cdpUrl)).filter((target) => target.type === 'page');
+  const foreignPages = pages.filter((target) => !isIgnorableBrowserPageUrl(target.url));
+  if (foreignPages.length > 0) {
+    return { closed: false, reason: 'foreign-pages', foreignPageCount: foreignPages.length };
+  }
+
+  const version = await fetchJson(`${cdpUrl.replace(/\/$/, '')}/json/version`);
+  const browser = await connectCdp(version.webSocketDebuggerUrl);
+  try {
+    await browser.call('Browser.close');
+    return { closed: true, reason: 'idle-owned-browser' };
   } finally {
     browser.close();
   }
@@ -372,12 +408,34 @@ export async function acquirePikPakBrowserLease({
   account = process.env.PIKPAK_ACCOUNT || '',
   password = process.env.PIKPAK_PASSWORD || '',
 } = {}) {
-  await ensureCdpAvailable({ cdpUrl });
   const holder = { id: randomUUID(), pid: process.pid, acquiredAt: new Date().toISOString() };
   let target;
 
   await withLeaseLock(async () => {
-    const state = await readLeaseState();
+    let state = await readLeaseState();
+
+    // 生命周期 state 只有一份。若上一次实验使用的是另一 CDP 且已经没有活 holder，
+    // 可以安全重置；若仍有活 holder，则拒绝混用，避免两个端口互相关闭 target。
+    if (state.cdpUrl && state.cdpUrl !== cdpUrl) {
+      if (state.holders.length > 0) {
+        throw new Error(`另一个 CDP (${state.cdpUrl}) 仍持有 PikPak BrowserLease。`);
+      }
+      state = { targetId: null, holders: [] };
+    }
+
+    // 把“检查 + 必要时启动 Chrome”也放进同一个跨进程锁，避免 9222 同时不可达时
+    // 三个 CLI 一起 spawn 三个 Chrome。
+    const availability = await ensureCdpAvailable({ cdpUrl });
+    if (availability.startedBrowser) {
+      state.browserOwned = true;
+      state.browserPid = availability.browserPid || null;
+      state.browserStartedAt = new Date().toISOString();
+    } else if (state.browserOwned && state.browserPid && !isPidAlive(state.browserPid)) {
+      // state 残留但原 owner 已不存在，宁可放弃 ownership，也绝不能猜测当前 Chrome 仍归我们。
+      state.browserOwned = false;
+      state.browserPid = null;
+    }
+
     target = await findManagedTarget(cdpUrl, state.targetId);
     if (!target) target = await createManagedTarget(cdpUrl);
     state.targetId = target.id;
@@ -418,15 +476,35 @@ export async function acquirePikPakBrowserLease({
 }
 
 async function releasePikPakBrowserLease({ cdpUrl, targetId, holderId, keepAlive = false }) {
-  let shouldClose = false;
   await withLeaseLock(async () => {
     const state = await readLeaseState();
     state.holders = state.holders.filter((holder) => holder.id !== holderId);
     const isSameTarget = state.targetId === targetId;
-    shouldClose = isSameTarget && state.holders.length === 0 && !keepAlive;
-    if (shouldClose) state.targetId = null;
+    const shouldCloseTarget = isSameTarget && state.holders.length === 0 && !keepAlive;
+
+    if (shouldCloseTarget) {
+      // 在同一 lifecycle lock 内完成关闭，避免“最后一个 holder 判空”与下一位 acquire 交错。
+      await closeManagedTarget(cdpUrl, targetId).catch(() => {});
+      state.targetId = null;
+
+      if (state.browserOwned && state.cdpUrl === cdpUrl) {
+        try {
+          const browserResult = await closeOwnedBrowserIfIdle(cdpUrl);
+          // 无论是成功关闭，还是因为发现外来页面而拒绝关闭，都不再保留 browser ownership：
+          // 后者说明这个 Chrome 已经变成共享资源，未来命令不得伺机把它关掉。
+          state.browserOwned = false;
+          state.browserPid = null;
+          state.browserReleaseReason = browserResult.reason;
+        } catch {
+          // 无法证明浏览器仍归自己/仍空闲时，一律放弃 ownership，不做进程级强杀。
+          state.browserOwned = false;
+          state.browserPid = null;
+          state.browserReleaseReason = 'browser-close-unverified';
+        }
+      }
+    }
+
     state.updatedAt = new Date().toISOString();
     await writeLeaseState(state);
   });
-  if (shouldClose) await closeManagedTarget(cdpUrl, targetId).catch(() => {});
 }
