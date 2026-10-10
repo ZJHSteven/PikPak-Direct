@@ -19,6 +19,7 @@
 - 新增 cloud-pull CLI 第一版：单文件 HTTP 源站、Quick Tunnel、HEAD 预检、Cloud Download task、任务完成轮询与 source GET/HEAD/Range/bytesServed 统计全部进入同一 try/finally 生命周期。待自动测试与真实 1 MiB smoke。
 - 第一次真实 1 MiB cloud-pull smoke 在 PikPak task 创建前被公网 HEAD gate 拦下：cloudflared 已分配 URL，但立即 fetch 仍报 fetch failed，属于 Quick Tunnel URL 分配与 Edge/connector 真正 ready 之间的竞态。finally 已实测把 cloudflared、HTTP 监听和受管 PikPak tab 全部清零。现已把 HEAD gate 改为 20 秒窗口内重试，仍不发送文件正文。
 - 第二次 smoke 与独立诊断进一步定位：cloudflared 会先打印随机 URL，随后才打印 Registered tunnel connection；只有后者出现后，同一随机域名才由 curl/Node 稳定访问。手工诊断中 Registered 后请求能到 Cloudflare Edge（故意指向不存在 origin 时正确返回 502）。因此 Quick Tunnel ready 条件已从“看到 URL”升级为“同时看到 URL + Registered tunnel connection”，避免首次过早 DNS 查询造成负缓存。
+- 第三次 smoke 遇到 Cloudflare Quick Tunnel 控制面本身超时：api.trycloudflare.com/tunnel 在返回 headers 前 deadline exceeded，cloudflared code=1，仍未创建 PikPak task。Route B 现对“尚未获得已注册 Tunnel”的创建阶段增加最多 3 次有限重试；一旦 Tunnel 已注册则绝不自动换 hostname，避免让已创建的 PikPak task 指向失效 URL。
 
 ## 2026-10-10 手机冷备实战：P30 Route A 已重新验证，发现并修复空文件边界
 

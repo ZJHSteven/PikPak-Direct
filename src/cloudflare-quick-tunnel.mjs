@@ -71,7 +71,7 @@ export async function waitForPublicFileHead({
  *   spawnImpl?: typeof spawn,
  * }} options
  */
-export async function createQuickTunnel({
+async function createQuickTunnelOnce({
   localUrl,
   cloudflaredPath = process.env.CLOUDFLARED_PATH || DEFAULT_CLOUDFLARED_PATH,
   timeoutMs = 30_000,
@@ -170,4 +170,41 @@ export async function createQuickTunnel({
       if (child.exitCode === null) child.kill('SIGKILL');
     },
   };
+}
+
+/**
+ * Quick Tunnel 控制面本身没有 uptime SLA，偶发会在 api.trycloudflare.com/tunnel 阶段超时。
+ * 因此只对“Tunnel 尚未创建/注册”的阶段做有限重试；一旦拿到已注册 Tunnel，就绝不自动
+ * 换 hostname，以免正在使用的 PikPak task 指向失效 URL。
+ */
+export async function createQuickTunnel({
+  localUrl,
+  cloudflaredPath = process.env.CLOUDFLARED_PATH || DEFAULT_CLOUDFLARED_PATH,
+  timeoutMs = 30_000,
+  maxAttempts = 3,
+  retryDelayMs = 1_500,
+  spawnImpl = spawn,
+}) {
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 5) {
+    throw new Error('maxAttempts 必须是 1~5 的整数。');
+  }
+
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await createQuickTunnelOnce({
+        localUrl,
+        cloudflaredPath,
+        timeoutMs,
+        spawnImpl,
+      });
+    } catch (error) {
+      lastError = error;
+      if (attempt >= maxAttempts) break;
+      await sleep(retryDelayMs * attempt);
+    }
+  }
+  throw new Error(
+    `Cloudflare Quick Tunnel 连续 ${maxAttempts} 次创建失败: ${lastError?.message || 'unknown'}`,
+  );
 }

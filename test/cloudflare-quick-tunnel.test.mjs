@@ -123,3 +123,42 @@ test('公网 HEAD ready gate 会容忍 Quick Tunnel URL 刚分配时的短暂失
   assert.equal(response.status, 200);
   assert.equal(attempts, 3);
 });
+
+test('Quick Tunnel 控制面首次失败时会有限重试，而不是直接终止 Route B', async () => {
+  let spawns = 0;
+  const fakeSpawn = () => {
+    spawns += 1;
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.pid = 9000 + spawns;
+    child.exitCode = null;
+    child.kill = () => {
+      child.exitCode = 0;
+      child.emit('exit', 0);
+      return true;
+    };
+    queueMicrotask(() => {
+      if (spawns === 1) {
+        child.exitCode = 1;
+        child.stderr.write('failed to request quick Tunnel: context deadline exceeded\n');
+        child.emit('exit', 1);
+      } else {
+        child.stderr.write('INF https://retry-ok.trycloudflare.com\n');
+        child.stderr.write('INF Registered tunnel connection connIndex=0 protocol=quic\n');
+      }
+    });
+    return child;
+  };
+
+  const tunnel = await createQuickTunnel({
+    localUrl: 'http://127.0.0.1:18765',
+    cloudflaredPath: 'cloudflared-test',
+    spawnImpl: fakeSpawn,
+    maxAttempts: 2,
+    retryDelayMs: 1,
+  });
+  assert.equal(spawns, 2);
+  assert.equal(tunnel.publicBaseUrl, 'https://retry-ok.trycloudflare.com');
+  await tunnel.close();
+});
