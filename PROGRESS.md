@@ -2,6 +2,10 @@
 
 ## 2026-10-11 Route A/B 收尾已认领
 
+- 2026-10-11 用户进一步明确真实架构：9222 是长期共享的“Chrome CDP 日常用”，不是 PikPak-Direct 私有进程；Route A 现在已删除 Chrome spawn / Browser.close 设计，项目只拥有带 marker 的 PikPak tab。当前真实 9222 主进程与桌面/开始菜单快捷方式参数完全一致：同一 Chrome 可执行文件、`D:\AppData\Chrome\Chrome-CDP\User Data`、Default profile、9222、127.0.0.1、no-first-run/no-default-browser-check。
+- Route B 架构也已纠偏：正式方案不再动态创建 Quick Tunnel。用户已有长期保存的 Cloudflare Tunnel + DNS routing，CLI 只需要让对应 origin 在任务期间上线/下线；Tunnel/DNS 映射本身保持不变。Quick Tunnel 代码降级为历史 PoC/诊断证据，不再作为大文件正式 fallback。
+- 本轮终点扩展为整个 PikPak CLI 收口：完成上述两项后继续实现客户端加密仓库、CDC/pack、snapshot/index 与 fresh-machine restore，不在 Route A/B 停止。
+
 - Live Ops 已新增两个独立子项：Route A“Chrome 生命周期与自动登录”、Route B“Cloud Download 无网页 fallback”，均置为 doing。
 - Route A 当前已做独立登录页实测：全新 9333 临时 Chrome 访问 /drive 会跳到 /drive/login?redirect=/all；默认可见 Google/Facebook/Apple 登录，底部有手机/邮箱/二维码入口；点击邮箱后出现“请输入邮箱”“请输入密码”和“登录”按钮。
 - DevSpace Secrets 已确认存在 pikpak_account / pikpak_password 两个 key；后续只允许通过运行时 Secret 注入，不把明文读入源码、日志或文档。
@@ -12,7 +16,7 @@
 - Route A 离线自动测试现为 50/50 全绿。
 - Route A 真实 9222 单任务 smoke 已通过：日常 Chrome 起初没有 PikPak 页面，acquire 自动创建受管 tab 并进入 https://mypikpak.com/drive/all，证明当前日常 Profile 登录态可直接复用；release 后该受管 tab 被关闭。
 - Route A 真实 3 路跨进程并发 smoke 已通过：持有期间 PikPak tab 数为 1，三个进程获得同一 targetId；最后一个 holder 退出后 PikPak tab 数变为 0。由此确认“并发复用一个控制面 tab + 最后一个人关门”的实现有效。
-- Route A 浏览器级生命周期继续收口：ensureCdpAvailable 现在在跨进程 lease lock 内执行，避免 9222 不可达时并发 CLI 重复 spawn Chrome；若 Chrome 确由本工具启动，则最后一个 holder 会先关受管 PikPak tab，再检查剩余 page targets。只有全部只是 about:blank/Chrome New Tab 才 Browser.close；一旦发现任何外来页面，立即放弃 browser ownership，今后也不会伺机误关这个已共享的 Chrome。
+- Route A 浏览器级 ownership 设计已废弃：PikPak-Direct 不再启动或关闭整个 Chrome。最后一个 holder 只关闭本项目 marker tab；9222 不在线时返回 CDP_UNAVAILABLE，要求用户启动现有“Chrome CDP 日常用”。
 - 修正一个既有清理语义 bug：当前 Web bundle 中 module 18839.Cw 才是 /files:batchTrash，VK 实际是 /files:batchDelete。trashFile() 已从 VK 改为 Cw，确保 --trash-after-success 真正进入回收站而不是永久删除。本轮此前被 VK 删除的对象均是明确创建的 smoke 测试文件，没有触及业务对象。
 - 独立 9333 无痕登录探针及 9877 Browser Harness 实验服务已全部停止，C:\Temp\pikpak-incognito-probe 已删除，不留临时浏览器/Profile/监听端口。
 - Route B 历史官方 CLI 审计已复核：官方 v0.5.1 二进制 checksum 匹配，但未签 Authenticode、闭源且没有零遥测证据；因此本轮继续选择“Web/API 协议复刻优先，不引入官方 CLI”。
@@ -59,7 +63,7 @@
 - 已验证：`node bin/pikpak-direct.mjs upload <file>` 可从真实本地路径读取文件，自动发现 `ap-southeast-1`，正文走原生 Aliyun OSS endpoint，PikPak 最终 `PHASE_TYPE_COMPLETE`；8 MiB smoke test 已两次成功并清理远端测试文件。
 - 已验证（2026-09-19）：1 MiB 随机文件通过 `127.0.0.1 HTTP -> Cloudflare Quick Tunnel -> PikPak Web Cloud Download -> My Pack` 成功保存；源站实际收到 4 次远端 GET，证明正文由 PikPak/Cloudflare 方向主动回拉。测试文件、Quick Tunnel 与临时 HTTP 服务均已清理。
 - 正在做：把 Cloud Download PoC 从“网页手工提交 URL”推进到可恢复的一键工具；并继续补 manifest、目录/归档、加密和增量快照设计。
-- 下一步：先完成 Quick Tunnel 生命周期与 PikPak Web Cloud Download 控制面的安全自动化；随后加入持久 manifest/SQLite 索引，再做目录流式归档与分块加密。
+- 下一步：Route B 绑定已有固定 Cloudflare Tunnel/DNS 公网入口，并把 cloud-pull 改成只管理临时 origin；随后直接进入加密仓库主线：key slots -> CDC/chunk/pack -> snapshot/index -> fresh-machine restore。
 - 本轮最终自检：28/28 单元测试通过；Git working tree clean；Cloud Download smoke 远端测试文件已删除；Quick Tunnel/临时 HTTP 已停止；`P:` 不存在且无 rclone 常驻挂载。
 - 当前可用命令：`node bin/pikpak-direct.mjs upload "<local-file>"`，默认 direct-only + CNAME/DoH 自动 region 发现；真实 8MiB smoke test 已验证。
 - Cloud Download 源站模块：`src/temporary-file-server.mjs` 已实现 loopback-only、256 bit 随机 URL、GET/HEAD/单段 Range、无目录列表和实际发送字节统计；对应测试全绿。
@@ -75,7 +79,7 @@
 - 决策E：region 默认通过多家 DoH 的 CNAME 共识自动发现，而不是硬编码新加坡。当前 CNAME 形如 `bucket.region.thepacificphs.com`，至少两家一致且 bucket 匹配才接受。
 - 决策F：STS 换证尚未验证前，不宣称支持任意 TB 单文件。当前 task STS 约 12h；相同 fileId 立即 recreate 返回同一 task/key/expiration。
 - 决策G：Cloud Download 新路线优先复用 PikPak 官方 Web 控制面，而不是把官方 CLI 作为默认依赖。原因：CLI/WebDAV/Rclone 都属于 Connected Apps，合计受月度 Transfer Quota 的 25% 子限额；Web 属于官方应用，不受该 Connected Apps 子限额。
-- 决策H：临时公网源站必须是“loopback 单文件源站 + 临时 Tunnel”，不能把整个目录、局域网服务或管理端口直接暴露公网。
+- 决策H：临时公网源站采用“固定 Cloudflare Tunnel/DNS 映射 + 任务期 loopback 单文件 origin”。Tunnel/DNS 作为长期基础设施保持不变；本项目不再按任务创建 Quick Tunnel，也不能把整个目录、局域网服务或管理端口直接暴露公网。
 
 ## 已验证实验摘要
 

@@ -1,6 +1,6 @@
 # PikPak-Direct 执行计划
 
-## 2026-10-11：Route A 浏览器生命周期收口 + Route B 自动化
+## 2026-10-11：Route A/B 最终收口 + 加密仓库主链
 
 本轮目标不是继续堆传输 PoC，而是把两条真正可用的数据路线都收口成一次性、可无人值守、可安全恢复的 CLI。
 
@@ -8,7 +8,7 @@
 
 - [x] 用独立 9333 临时无痕 Chrome 实测 PikPak 登录页：默认展示 Google/Facebook/Apple；底部另有手机、邮箱、二维码入口。
 - [x] 实测点击邮箱入口后出现标准邮箱 + 密码输入框与登录按钮。
-- [ ] CLI 启动时先探测默认 127.0.0.1:9222；不可达时按固定 Chrome 可执行文件 + Chrome-CDP Profile 启动日常 CDP Chrome。
+- [x] 9222 明确视为用户长期运行的“日常 CDP Chrome”共享基础设施：PikPak-Direct 只连接，不启动、不关闭整个 Chrome；9222 不可达时明确失败，避免参数漂移或第二 Chrome 实例。
 - [ ] 受管 PikPak tab 使用明确 ownership 标记，不把“任意打开的 PikPak 页面”视为本工具所有。
 - [ ] 加跨进程 lease/refcount：并发多个 Route A 任务优先共享同一个受管控制面 tab；最后一个 lease 释放后才关闭该 tab。
 - [ ] 受管 tab 不存在时创建并导航到 https://mypikpak.com/drive/；存在时直接复用，不重复开页。
@@ -27,12 +27,22 @@
 - [x] 定位当前 Web 控制面：NewFiles 组件调用 webpack module 18839 的 x3，body 为 upload_type=UPLOAD_TYPE_URL + url.url；已据此实现 PikPakWebSession.createCloudDownload()。
 - [x] 复核 2026-09-19 官方 CLI 静态审计：v0.5.1 checksum 与官方一致、Defender 未报已知威胁，但 Windows EXE 未签名且闭源，无法证明零遥测；因此继续维持“不作为默认依赖”的决策。
 - [ ] 若后续确实需要 PikPak 官方 CLI，先在隔离环境审计遥测、自动更新、凭据、网络目的地；能不用则不用。
-- [ ] 实现 cloud-pull：启动 loopback 单文件 HTTP -> Quick Tunnel -> 创建 URL task -> 等待完成 -> 无论成功失败都关闭 Tunnel/HTTP。
-- [x] cloud-pull 第一版代码已落盘：loopback HTTP -> cloudflared Quick Tunnel(--no-autoupdate) -> HEAD 预检 -> Web URL task -> waitTaskComplete -> finally 关闭 Web/Tunnel/HTTP；待离线测试与真实小文件 smoke。
+- [ ] cloud-pull 改为“既有固定 Cloudflare Tunnel / DNS 公网入口 + 临时本地 origin”：Tunnel/DNS 映射长期保存，不为每次任务申请 Quick Tunnel；CLI 只负责短时启动/停止本地 origin，并在提交前检查固定公网 URL 已能命中该 origin。
+- [x] Quick Tunnel 版仅保留为历史实验代码/证据：已证明 PikPak 能主动拉取，但不再作为正式架构或默认 fallback。
 - [ ] 记录 Range/GET 次数和累计发送字节，避免大文件被多次完整回拉导致上行放大。
 - [x] 已记录 GET/HEAD/Range/累计字节，并在真实 1 MiB smoke 观测到 5.58x 读取放大；新增安全 requestLog 精确记录各请求的 Range/计划字节。下一步需基于请求序列定位放大原因后再决定是否允许大文件 Route B。
 - [x] Route B 失败清理语义已补：已创建但未成功的 offline task 在一次性 URL 失效前通过 Web task DELETE(delete_files=true) 清理，不把 RUNNING 尾巴留在 PikPak。
 - [ ] Route A 失败进入 Route B 的条件必须显式、可审计；不能静默改变数据路径或放宽安全策略。
+
+### 加密仓库 / CDC / 恢复链
+
+- [ ] 定义稳定的 repository header、key slot、pack、chunk、snapshot、index 版本格式；除最小魔数/版本/算法标识外，文件名、路径、元数据和正文均加密。
+- [ ] master key 随机生成；至少支持 password slot + recovery slot 两个独立包装入口，任何 slot 都只包装 master key，不重复加密仓库正文。
+- [ ] 使用内容定义分块（CDC）生成稳定 chunk 边界，chunk hash 只作为本地/密文索引键使用，避免将原始文件路径或明文元数据暴露到远端对象名。
+- [ ] chunk 压缩后 AEAD 加密并聚合进 pack；pack 末尾带可独立扫描的加密 TOC，使本地 SQLite 丢失后可从远端 pack 重建索引。
+- [ ] snapshot manifest 记录目录树、文件元数据和 chunk 引用；全量加密并通过不可变对象写入，最新 snapshot 指针采用可恢复更新策略。
+- [ ] 本地 SQLite 只作为缓存/加速层，不是恢复所必需；fresh machine 只凭 PikPak 账号 + recovery secret 能枚举仓库、解锁、重建索引并恢复文件。
+- [ ] CLI 增加 init-repo / backup / list-snapshots / restore / verify-repo 等最小可用命令，并补离线 round-trip、去重、增量、损坏检测、错误密码/恢复密钥边界测试。
 
 ## 2026-10-10：手机冷备实战 / 0 字节文件边界修复
 

@@ -1,12 +1,13 @@
 // PikPak Route A 的浏览器 / 标签页生命周期管理。
 //
-// 这个模块只管理“控制面”：确保一个可连接的本机 CDP Chrome 存在、复用本工具创建的
+// 这个模块只管理“控制面”：连接已经长期运行的日常 CDP Chrome、复用本工具创建的
 // PikPak 标签页、必要时完成邮箱密码登录，并在最后一个使用者退出后只关闭本工具自己的 tab。
-// 如果 Chrome 本身也是本工具启动的，则还会在“没有任何外来页面”的前提下关闭整个浏览器；
-// 一旦观察到其他 Agent/用户页面，就主动放弃浏览器级 ownership，绝不为了省内存误关别人的工作。
+//
+// 9222 Chrome 是用户的共享日常基础设施，不属于 PikPak-Direct：本项目永远不 spawn Chrome，
+// 也永远不调用 Browser.close。这样不会因为启动参数漂移制造第二个 Chrome 实例，也不会误关
+// ChatGPT Archive CLI / 用户 / 其他 Agent 正在共用的浏览器。
 // 上传正文仍然完全由 Node -> Aliyun OSS 完成，绝不会经过这里。
 
-import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { open, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -17,34 +18,11 @@ export const PIKPAK_MANAGED_WINDOW_NAME = 'pikpak-direct:managed-control-plane:v
 export const PIKPAK_DRIVE_URL = 'https://mypikpak.com/drive/';
 
 const DEFAULT_CDP_URL = 'http://127.0.0.1:9222';
-const DEFAULT_CHROME_PATH = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-const DEFAULT_CHROME_PROFILE = 'D:\\AppData\\Chrome\\Chrome-CDP\\User Data';
 const LEASE_STATE_PATH = join(tmpdir(), 'pikpak-direct-browser-lease.json');
 const LEASE_LOCK_PATH = `${LEASE_STATE_PATH}.lock`;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** 只允许自动启动本机 loopback CDP，避免误把“浏览器启动”逻辑指向远程地址。 */
-export function parseLocalCdpUrl(cdpUrl) {
-  const url = new URL(cdpUrl);
-  const isLoopback = url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '::1';
-  if (!isLoopback || url.protocol !== 'http:') return null;
-  const port = Number(url.port || 80);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
-  return { host: url.hostname, port };
-}
-
-/**
- * 判断一个 page target 是否只是 Chrome 启动时自动留下的空白页。
- * 只有这些页面存在时，本工具才允许关闭自己启动的整个 Chrome。
- */
-export function isIgnorableBrowserPageUrl(url) {
-  const value = String(url || '').replace(/\/$/, '');
-  return value === 'about:blank'
-    || value === 'chrome://newtab'
-    || value === 'chrome://new-tab-page';
 }
 
 /** 进程仍存活时返回 true；EPERM 也视为“活着但无权发信号”。 */
@@ -217,62 +195,14 @@ async function closeManagedTarget(cdpUrl, targetId) {
   }
 }
 
-/**
- * 仅在不存在外来 page target 时关闭整个 Browser。
- *
- * 调用方必须已经确认这个 Chrome 是 PikPak-Direct 自己启动的。这里仍做第二层保护：
- * 任何非 about:blank / Chrome New Tab 的页面都会阻止 Browser.close。
- */
-async function closeOwnedBrowserIfIdle(cdpUrl) {
-  const pages = (await listTargets(cdpUrl)).filter((target) => target.type === 'page');
-  const foreignPages = pages.filter((target) => !isIgnorableBrowserPageUrl(target.url));
-  if (foreignPages.length > 0) {
-    return { closed: false, reason: 'foreign-pages', foreignPageCount: foreignPages.length };
-  }
-
-  const version = await fetchJson(`${cdpUrl.replace(/\/$/, '')}/json/version`);
-  const browser = await connectCdp(version.webSocketDebuggerUrl);
-  try {
-    await browser.call('Browser.close');
-    return { closed: true, reason: 'idle-owned-browser' };
-  } finally {
-    browser.close();
-  }
-}
-
-async function ensureCdpAvailable({
-  cdpUrl,
-  chromePath = process.env.PIKPAK_CHROME_PATH || DEFAULT_CHROME_PATH,
-  chromeProfile = process.env.PIKPAK_CHROME_PROFILE || DEFAULT_CHROME_PROFILE,
-}) {
+async function ensureCdpAvailable({ cdpUrl }) {
   try {
     await fetchJson(`${cdpUrl.replace(/\/$/, '')}/json/version`, 1_000);
-    return { startedBrowser: false };
+    return;
   } catch {
-    const local = parseLocalCdpUrl(cdpUrl);
-    if (!local) throw new Error(`CDP 不可达且不是可自动启动的本机地址: ${cdpUrl}`);
-    if (cdpUrl !== DEFAULT_CDP_URL && !process.env.PIKPAK_ALLOW_CUSTOM_CDP_AUTOSTART) {
-      throw new Error(`CDP 不可达: ${cdpUrl}；自定义端口默认不自动启动 Chrome。`);
-    }
-    const child = spawn(chromePath, [
-      `--remote-debugging-port=${local.port}`,
-      `--user-data-dir=${chromeProfile}`,
-      '--no-first-run',
-      '--no-default-browser-check',
-      'about:blank',
-    ], { detached: true, stdio: 'ignore' });
-    child.unref();
-
-    for (let i = 0; i < 60; i += 1) {
-      await sleep(250);
-      try {
-        await fetchJson(`${cdpUrl.replace(/\/$/, '')}/json/version`, 500);
-        return { startedBrowser: true, browserPid: child.pid };
-      } catch {
-        // 继续等 Chrome 初始化；总上限约 15 秒。
-      }
-    }
-    throw new Error(`已启动 Chrome 但 15 秒内仍无法连接 CDP: ${cdpUrl}`);
+    const error = new Error(`日常 CDP Chrome 不可达: ${cdpUrl}。PikPak-Direct 不会自行启动第二个 Chrome，请先启动“Chrome CDP 日常用”。`);
+    error.code = 'CDP_UNAVAILABLE';
+    throw error;
   }
 }
 
@@ -423,18 +353,13 @@ export async function acquirePikPakBrowserLease({
       state = { targetId: null, holders: [] };
     }
 
-    // 把“检查 + 必要时启动 Chrome”也放进同一个跨进程锁，避免 9222 同时不可达时
-    // 三个 CLI 一起 spawn 三个 Chrome。
-    const availability = await ensureCdpAvailable({ cdpUrl });
-    if (availability.startedBrowser) {
-      state.browserOwned = true;
-      state.browserPid = availability.browserPid || null;
-      state.browserStartedAt = new Date().toISOString();
-    } else if (state.browserOwned && state.browserPid && !isPidAlive(state.browserPid)) {
-      // state 残留但原 owner 已不存在，宁可放弃 ownership，也绝不能猜测当前 Chrome 仍归我们。
-      state.browserOwned = false;
-      state.browserPid = null;
-    }
+    // 9222 Chrome 是共享日常基础设施，只验证可达性；绝不在这里启动/关闭浏览器进程。
+    await ensureCdpAvailable({ cdpUrl });
+    // 兼容清理旧版本残留的 ownership 字段，避免未来版本误以为浏览器归本项目所有。
+    delete state.browserOwned;
+    delete state.browserPid;
+    delete state.browserStartedAt;
+    delete state.browserReleaseReason;
 
     target = await findManagedTarget(cdpUrl, state.targetId);
     if (!target) target = await createManagedTarget(cdpUrl);
@@ -487,21 +412,6 @@ async function releasePikPakBrowserLease({ cdpUrl, targetId, holderId, keepAlive
       await closeManagedTarget(cdpUrl, targetId).catch(() => {});
       state.targetId = null;
 
-      if (state.browserOwned && state.cdpUrl === cdpUrl) {
-        try {
-          const browserResult = await closeOwnedBrowserIfIdle(cdpUrl);
-          // 无论是成功关闭，还是因为发现外来页面而拒绝关闭，都不再保留 browser ownership：
-          // 后者说明这个 Chrome 已经变成共享资源，未来命令不得伺机把它关掉。
-          state.browserOwned = false;
-          state.browserPid = null;
-          state.browserReleaseReason = browserResult.reason;
-        } catch {
-          // 无法证明浏览器仍归自己/仍空闲时，一律放弃 ownership，不做进程级强杀。
-          state.browserOwned = false;
-          state.browserPid = null;
-          state.browserReleaseReason = 'browser-close-unverified';
-        }
-      }
     }
 
     state.updatedAt = new Date().toISOString();
