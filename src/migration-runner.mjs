@@ -464,7 +464,7 @@ export async function runMigration({
       dryRun: false,
     };
   } finally {
-    web.close();
+    await web.close();
   }
 }
 

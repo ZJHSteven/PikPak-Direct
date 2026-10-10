@@ -67,7 +67,9 @@ function printHelp() {
 重要：
   - 本工具不会切换 Mihomo 全局 mode。
   - direct-only 无法确定/验证 endpoint 时会失败，不会偷偷把 TB 正文走代理。
-  - 当前控制面依赖已登录的 PikPak Web 标签页与 2026-08-29 已验证的 Web 前端模块。
+  - 控制面会复用/创建本工具受管的 PikPak tab；普通用户 tab 不会被认领或关闭。
+  - 未登录时可从运行时环境变量 PIKPAK_ACCOUNT / PIKPAK_PASSWORD 自动走邮箱登录。
+  - 若触发人机验证，CLI 会明确报 CAPTCHA_REQUIRED 并保留受管 tab 供人工完成，不绕过验证码。
 `);
 }
 
@@ -358,7 +360,7 @@ async function uploadCommand(args) {
     }
     throw error;
   } finally {
-    web.close();
+    await web.close();
   }
 }
 

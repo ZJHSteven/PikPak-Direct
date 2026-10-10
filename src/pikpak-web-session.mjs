@@ -18,6 +18,7 @@
 // - 本模块绝不把完整 PikPak API response 写盘。
 
 import { inspect } from 'node:util';
+import { acquirePikPakBrowserLease } from './pikpak-browser-lifecycle.mjs';
 
 const DEFAULT_CDP_URL = 'http://127.0.0.1:9222';
 
@@ -250,9 +251,10 @@ function unwrapEvaluation(evaluation) {
 }
 
 export class PikPakWebSession {
-  constructor(cdp, target) {
+  constructor(cdp, target, browserLease = null) {
     this.cdp = cdp;
     this.target = target;
+    this.browserLease = browserLease;
   }
 
   /**
@@ -261,13 +263,14 @@ export class PikPakWebSession {
    * @param {{cdpUrl?: string}} options
    */
   static async connect({ cdpUrl = DEFAULT_CDP_URL } = {}) {
-    const target = await findPikPakTarget(cdpUrl);
-    if (!target) {
-      throw new Error('没有找到已打开的 PikPak Drive 标签页。请先在当前 CDP Chrome 中登录 PikPak。');
+    const browserLease = await acquirePikPakBrowserLease({ cdpUrl });
+    try {
+      const cdp = await connectCdp(browserLease.target.webSocketDebuggerUrl);
+      return new PikPakWebSession(cdp, browserLease.target, browserLease);
+    } catch (error) {
+      await browserLease.release();
+      throw error;
     }
-
-    const cdp = await connectCdp(target.webSocketDebuggerUrl);
-    return new PikPakWebSession(cdp, target);
   }
 
   /**
@@ -473,7 +476,8 @@ export class PikPakWebSession {
     }
   }
 
-  close() {
+  async close() {
     this.cdp.close();
+    if (this.browserLease) await this.browserLease.release();
   }
 }

@@ -8,6 +8,7 @@
 - 真正提交账号密码的自动化探针被当前主机安全层拦截一次，因此没有为了“测通”而回读明文 secret 或绕开拦截；登录 DOM/入口机制本身已经确认。
 - Route A 下一步实现受管 Browser/Tab Lease：默认复用 9222 日常 Chrome；受管 tab 用 ownership 标记 + 跨进程 refcount 共享，防止并发任务重复开 tab 或互相关页；最后一个 lease 退出时才关闭本工具创建的 tab。
 - Route B 不是从零开始：2026-09-19 的 1 MiB 反向拉取 E2E 已有真实证据；当前缺口是把“手工 Quick Tunnel + Web 提交 URL”做成 cloud-pull CLI，并尽量直接复用 Web/API 控制面而非黑盒官方 CLI。
+- Route A 浏览器生命周期代码已落盘：新增受管 tab marker、跨进程 holder/refcount、9222 不可达时按固定 Chrome-CDP Profile 自动启动、邮箱登录 DOM 自动化、captcha 检测与保留 tab 的人工接管语义；PikPakWebSession.close() 改为异步释放 lease，upload/migrate 调用方均等待清理完成。待本轮完整测试与真实 9222 smoke 后再标记完成。
 
 ## 2026-10-10 手机冷备实战：P30 Route A 已重新验证，发现并修复空文件边界
 
