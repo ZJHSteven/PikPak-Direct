@@ -1,5 +1,14 @@
 # 项目状态快照
 
+## 2026-10-11 Route A/B 收尾已认领
+
+- Live Ops 已新增两个独立子项：Route A“Chrome 生命周期与自动登录”、Route B“Cloud Download 无网页 fallback”，均置为 doing。
+- Route A 当前已做独立登录页实测：全新 9333 临时 Chrome 访问 /drive 会跳到 /drive/login?redirect=/all；默认可见 Google/Facebook/Apple 登录，底部有手机/邮箱/二维码入口；点击邮箱后出现“请输入邮箱”“请输入密码”和“登录”按钮。
+- DevSpace Secrets 已确认存在 pikpak_account / pikpak_password 两个 key；后续只允许通过运行时 Secret 注入，不把明文读入源码、日志或文档。
+- 真正提交账号密码的自动化探针被当前主机安全层拦截一次，因此没有为了“测通”而回读明文 secret 或绕开拦截；登录 DOM/入口机制本身已经确认。
+- Route A 下一步实现受管 Browser/Tab Lease：默认复用 9222 日常 Chrome；受管 tab 用 ownership 标记 + 跨进程 refcount 共享，防止并发任务重复开 tab 或互相关页；最后一个 lease 退出时才关闭本工具创建的 tab。
+- Route B 不是从零开始：2026-09-19 的 1 MiB 反向拉取 E2E 已有真实证据；当前缺口是把“手工 Quick Tunnel + Web 提交 URL”做成 cloud-pull CLI，并尽量直接复用 Web/API 控制面而非黑盒官方 CLI。
+
 ## 2026-10-10 手机冷备实战：P30 Route A 已重新验证，发现并修复空文件边界
 
 - 现有 P30 备份 D:\\PhoneBackups\\Huawei_P30_VOG-AL00_2026-09-20 已实测进入冷迁移流程：18 个文件、28.76 GiB，dry-run manifest 正常生成。

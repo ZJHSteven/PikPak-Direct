@@ -1,5 +1,31 @@
 # PikPak-Direct 执行计划
 
+## 2026-10-11：Route A 浏览器生命周期收口 + Route B 自动化
+
+本轮目标不是继续堆传输 PoC，而是把两条真正可用的数据路线都收口成一次性、可无人值守、可安全恢复的 CLI。
+
+### Route A：受管 Chrome / Tab / 登录租约
+
+- [x] 用独立 9333 临时无痕 Chrome 实测 PikPak 登录页：默认展示 Google/Facebook/Apple；底部另有手机、邮箱、二维码入口。
+- [x] 实测点击邮箱入口后出现标准邮箱 + 密码输入框与登录按钮。
+- [ ] CLI 启动时先探测默认 127.0.0.1:9222；不可达时按固定 Chrome 可执行文件 + Chrome-CDP Profile 启动日常 CDP Chrome。
+- [ ] 受管 PikPak tab 使用明确 ownership 标记，不把“任意打开的 PikPak 页面”视为本工具所有。
+- [ ] 加跨进程 lease/refcount：并发多个 Route A 任务优先共享同一个受管控制面 tab；最后一个 lease 释放后才关闭该 tab。
+- [ ] 受管 tab 不存在时创建并导航到 https://mypikpak.com/drive/；存在时直接复用，不重复开页。
+- [ ] 检查登录态；未登录时优先使用运行时环境变量 PIKPAK_ACCOUNT / PIKPAK_PASSWORD 自动走邮箱登录。ChatGPT/DevSpace 调用时由 DevSpace Secrets 的 pikpak_account / pikpak_password 注入，禁止明文写盘和日志。
+- [ ] 检测 captcha / verification / challenge；遇到人机验证时进入明确的 CAPTCHA_REQUIRED 状态并保留受管 tab，允许人工接管后重试，不做验证码绕过。
+- [ ] Route A 在仍需创建任务/查询 task/清理文件时保持 tab lease；控制面彻底无用后释放。只关闭本工具创建的受管 tab，不关闭用户或其他 Agent 的普通 PikPak 页面。
+- [ ] 为 tab 复用、ownership、并发 lease、登录状态判断、异常清理补单测；最终跑完整测试和一个小文件真实 smoke。
+
+### Route B：Cloud Download 反向拉取自动化
+
+- [x] 既有真实证据：2026-09-19 的 1 MiB 文件已经通过 127.0.0.1 HTTP -> Cloudflare Quick Tunnel -> PikPak Web Cloud Download -> My Pack 完成。
+- [ ] 盘点当前 Cloud Download Web 控制面调用，优先直接复用/复刻网页内部 API，而不是引入黑盒官方 CLI。
+- [ ] 若后续确实需要 PikPak 官方 CLI，先在隔离环境审计遥测、自动更新、凭据、网络目的地；能不用则不用。
+- [ ] 实现 cloud-pull：启动 loopback 单文件 HTTP -> Quick Tunnel -> 创建 URL task -> 等待完成 -> 无论成功失败都关闭 Tunnel/HTTP。
+- [ ] 记录 Range/GET 次数和累计发送字节，避免大文件被多次完整回拉导致上行放大。
+- [ ] Route A 失败进入 Route B 的条件必须显式、可审计；不能静默改变数据路径或放宽安全策略。
+
 ## 2026-10-10：手机冷备实战 / 0 字节文件边界修复
 
 - [x] 用现有 P30 备份目录跑 migrate --dry-run，确认 18 个文件、28.76 GiB 能正确建 manifest。
