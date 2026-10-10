@@ -37,12 +37,12 @@
 
 ### 加密仓库 / CDC / 恢复链
 
-- [ ] 定义稳定的 repository header、key slot、pack、chunk、snapshot、index 版本格式；除最小魔数/版本/算法标识外，文件名、路径、元数据和正文均加密。
+- [x] 已定义并实现 repository v1：`repo.json` 只含最小版本/算法/key slots；pack 正文为逐 chunk AEAD 密文，文件尾部 TOC 整体加密；snapshot 目录树/路径/元数据/chunk 引用整体加密。
 - [x] master key 随机生成；已实现 password slot + recovery slot 两个独立包装入口，任何 slot 都只包装 master key；口令使用 scrypt，recovery key 使用 HKDF，上层正文子密钥继续按用途 HKDF 隔离。
 - [x] 已实现 `fastcdc-gear32-v1` 流式内容定义分块：固定 Gear seed、min/avg/max 双 mask、跨 read buffer 保持边界；chunk id 后续使用 SHA-256，且只进入加密 snapshot/TOC。
-- [ ] chunk 压缩后 AEAD 加密并聚合进 pack；pack 末尾带可独立扫描的加密 TOC，使本地 SQLite 丢失后可从远端 pack 重建索引。
-- [ ] snapshot manifest 记录目录树、文件元数据和 chunk 引用；全量加密并通过不可变对象写入，最新 snapshot 指针采用可恢复更新策略。
-- [ ] 本地 SQLite 只作为缓存/加速层，不是恢复所必需；fresh machine 只凭 PikPak 账号 + recovery secret 能枚举仓库、解锁、重建索引并恢复文件。
+- [x] chunk 先 Brotli-or-none 压缩，再 AES-256-GCM 加密并聚合进不可变 pack；pack 尾部加密 TOC 可单独扫描，已实现无需本地数据库的全局 chunk index 重建，并对损坏 pack 做局部隔离。
+- [x] snapshot manifest 已记录目录树、文件元数据、whole-file SHA-256 与有序 chunk 引用，整体 AEAD 加密；本地 latest.json 只是便利指针，fresh restore 可直接解密枚举所有 snapshot，不依赖它。
+- [x] 离线 fresh-machine 恢复链已实现：不依赖 SQLite/cache，只凭 repo 对象 + password/recovery key 重建 pack index、逐 chunk AEAD/hash 校验并原子恢复文件。下一步把这些对象同步/枚举到 PikPak 固定仓库根目录。
 - [ ] CLI 增加 init-repo / backup / list-snapshots / restore / verify-repo 等最小可用命令，并补离线 round-trip、去重、增量、损坏检测、错误密码/恢复密钥边界测试。
 
 ## 2026-10-10：手机冷备实战 / 0 字节文件边界修复
