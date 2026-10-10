@@ -38,9 +38,14 @@ test('createQuickTunnel 固定关闭自动更新并可从 stderr 拿 URL', async
       child.emit('exit', 0);
       return true;
     };
-    queueMicrotask(() => child.stderr.write(
-      'INF Requesting new quick Tunnel\nhttps://route-b-smoke.trycloudflare.com\n',
-    ));
+    queueMicrotask(() => {
+      child.stderr.write(
+        'INF Requesting new quick Tunnel\nhttps://route-b-smoke.trycloudflare.com\n',
+      );
+      child.stderr.write(
+        'INF Registered tunnel connection connIndex=0 location=lax01 protocol=quic\n',
+      );
+    });
     return child;
   };
 
@@ -59,6 +64,43 @@ test('createQuickTunnel 固定关闭自动更新并可从 stderr 拿 URL', async
     'http://127.0.0.1:18765',
   ]);
   assert.equal(calls[0].options.windowsHide, true);
+  await tunnel.close();
+});
+
+test('createQuickTunnel 必须等 Registered tunnel connection，不能只看到 URL 就 ready', async () => {
+  let child;
+  const fakeSpawn = () => {
+    child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.pid = 5678;
+    child.exitCode = null;
+    child.kill = () => {
+      child.exitCode = 0;
+      child.emit('exit', 0);
+      return true;
+    };
+    return child;
+  };
+
+  let resolved = false;
+  const pending = createQuickTunnel({
+    localUrl: 'http://127.0.0.1:18765',
+    spawnImpl: fakeSpawn,
+    cloudflaredPath: 'cloudflared-test',
+    timeoutMs: 2_000,
+  }).then((value) => {
+    resolved = true;
+    return value;
+  });
+
+  child.stderr.write('INF https://not-yet-ready.trycloudflare.com\n');
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(resolved, false);
+
+  child.stderr.write('INF Registered tunnel connection connIndex=0 protocol=quic\n');
+  const tunnel = await pending;
+  assert.equal(tunnel.publicBaseUrl, 'https://not-yet-ready.trycloudflare.com');
   await tunnel.close();
 });
 

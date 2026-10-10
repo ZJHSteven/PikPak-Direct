@@ -96,6 +96,7 @@ export async function createQuickTunnel({
 
   let logTail = '';
   let publicBaseUrl = null;
+  let registered = false;
   let settled = false;
 
   const ready = new Promise((resolve, reject) => {
@@ -103,8 +104,14 @@ export async function createQuickTunnel({
       const text = chunk.toString('utf8');
       // 只在内存保留很短的尾部用于故障提示，不写盘。
       logTail = (logTail + text).slice(-8_000);
-      publicBaseUrl ||= parseTryCloudflareUrl(text);
-      if (publicBaseUrl && !settled) {
+      publicBaseUrl ||= parseTryCloudflareUrl(logTail);
+      registered ||= /Registered tunnel connection/i.test(logTail);
+
+      // 不能只看到 trycloudflare URL 就宣布 ready。cloudflared 自己的 banner 也明确提示
+      // “it may take some time to be reachable”；实机还观察到 URL 打印后约 1~2 秒才出现
+      // Registered tunnel connection。若这时立即让 Node 做 DNS，可能把未注册阶段的
+      // ENOTFOUND/负 DNS 结果缓存进当前进程，后续 HEAD 重试仍连续失败。
+      if (publicBaseUrl && registered && !settled) {
         settled = true;
         resolve(publicBaseUrl);
       }
@@ -119,7 +126,9 @@ export async function createQuickTunnel({
     child.once('exit', (code) => {
       if (settled) return;
       settled = true;
-      reject(new Error(`cloudflared 在生成 Quick Tunnel URL 前退出，code=${code}; ${logTail.slice(-1200)}`));
+      reject(new Error(
+        `cloudflared 在 Quick Tunnel 完成注册前退出，code=${code}; ${logTail.slice(-1200)}`,
+      ));
     });
   });
 
