@@ -49,6 +49,11 @@ import {
 } from '../src/repository-backup.mjs';
 import { initializeRepository } from '../src/repository-format.mjs';
 import { generateRecoveryKey } from '../src/repo-crypto.mjs';
+import {
+  DEFAULT_REMOTE_REPOSITORY_FOLDER,
+  pullRepositoryFromPikPak,
+  pushRepositoryToPikPak,
+} from '../src/repository-remote.mjs';
 
 const DEFAULT_CDP_URL = 'http://127.0.0.1:9222';
 
@@ -59,6 +64,8 @@ function printHelp() {
   pikpak-direct repo-list <repo-dir>
   pikpak-direct repo-restore <repo-dir> <destination-dir> [--snapshot <id>] [--overwrite]
   pikpak-direct repo-verify <repo-dir> [--quick]
+  pikpak-direct repo-push <repo-dir> [--remote-repo-name <name>]
+  pikpak-direct repo-pull <repo-dir> [--remote-repo-name <name>] [--overwrite] [--quick]
 
 仓库凭据不接受命令行明文参数：
   PIKPAK_REPO_PASSWORD      password slot；repo-init 必须提供。
@@ -66,6 +73,9 @@ function printHelp() {
 
 repo-init 会把新 recovery key 写入 --recovery-key-out 指定的独立文件；该文件禁止放进 repo-dir，
 不会自动上传 PikPak。请把它作为真正的灾难恢复凭据另行保存。
+
+PikPak 远端仓库默认固定根目录：${DEFAULT_REMOTE_REPOSITORY_FOLDER}
+repo-push/pull 也要求仓库凭据，用于上传前/下载后的密码学完整性验证；PikPak 登录仍复用 9222 日常 CDP Chrome。
 `);
   console.log(`新增冷迁移命令：
   pikpak-direct migrate <file-or-directory> [--manifest <path>] [--backup-id <id>] [--dry-run]
@@ -125,6 +135,8 @@ function parseArgs(argv) {
     'repo-list',
     'repo-restore',
     'repo-verify',
+    'repo-push',
+    'repo-pull',
   ]);
   if (!knownCommands.has(command)) {
     throw new Error(`未知命令: ${command}`);
@@ -156,6 +168,7 @@ function parseArgs(argv) {
     overwrite: false,
     quick: false,
     packTargetMiB: null,
+    remoteRepoName: DEFAULT_REMOTE_REPOSITORY_FOLDER,
     region: null,
     route: 'direct-only',
     remoteName: null,
@@ -236,6 +249,9 @@ function parseArgs(argv) {
     } else if (flag === '--pack-target-mib') {
       args.packTargetMiB = Number(value);
       index += 1;
+    } else if (flag === '--remote-repo-name') {
+      args.remoteRepoName = value;
+      index += 1;
     } else {
       throw new Error(`未知参数: ${flag}`);
     }
@@ -255,6 +271,19 @@ function validateArgs(args) {
     }
     if (args.snapshotId && !/^[a-f0-9]{32}$/i.test(args.snapshotId)) {
       throw new Error('--snapshot 必须是 32 位十六进制 snapshot id。');
+    }
+    if (!String(args.remoteRepoName || '').trim()) throw new Error('--remote-repo-name 不能为空。');
+    if (args.command === 'repo-push') {
+      if (!['direct-only', 'prefer-direct', 'server'].includes(args.route)) {
+        throw new Error('--route 只能是 direct-only、prefer-direct 或 server。');
+      }
+      if (args.region && !isSafeAliyunRegion(args.region)) throw new Error(`无效 Aliyun region: ${args.region}`);
+      if (!Number.isInteger(args.parallel) || args.parallel < 1 || args.parallel > 32) {
+        throw new Error('--parallel 必须是 1~32 的整数。');
+      }
+      if (!Number.isFinite(args.checkInTimeoutSec) || args.checkInTimeoutSec < 1 || args.checkInTimeoutSec > 3600) {
+        throw new Error('--checkin-timeout-sec 必须是 1~3600 秒。');
+      }
     }
     return;
   }
@@ -907,6 +936,85 @@ async function repoVerifyCommand(args) {
   if (!result.ok) process.exitCode = 7;
 }
 
+function createRepositoryRemoteEventPrinter(direction) {
+  return (event) => {
+    if (event.type === 'skip') {
+      const name = event.artifact?.remoteName || event.remoteFile?.name || '';
+      console.log(`[${direction} skip] ${name}`);
+    } else if (event.type === 'upload-start') {
+      console.log(`[push] ${event.artifact.remoteName} (${formatBytes(event.artifact.size)})`);
+    } else if (event.type === 'upload-complete') {
+      console.log(`[push done] ${event.artifact.remoteName}`);
+    } else if (event.type === 'download-start') {
+      console.log(`[pull] ${event.remoteFile.name} (${formatBytes(event.remoteFile.size)})`);
+    } else if (event.type === 'download-complete') {
+      console.log(`[pull done] ${event.remoteFile.name}`);
+    }
+  };
+}
+
+async function repoPushCommand(args) {
+  const credentials = requireRepositoryCredentials();
+  // push 前至少完整验证一次本地仓库，避免把本地 bit-rot / 部分写入永久复制到云端 immutable 对象。
+  const verified = await verifyRepository({
+    repoDir: resolve(args.repoDir),
+    full: true,
+    ...credentials,
+  });
+  if (!verified.ok) throw new Error('本地仓库 full verify 未通过，拒绝推送到 PikPak。');
+
+  const result = await pushRepositoryToPikPak({
+    repoDir: resolve(args.repoDir),
+    cdpUrl: args.cdpUrl,
+    remoteFolderName: args.remoteRepoName,
+    region: args.region,
+    route: args.route,
+    parallel: args.parallel,
+    checkInTimeoutSec: args.checkInTimeoutSec,
+    onEvent: createRepositoryRemoteEventPrinter('push'),
+  });
+  console.log('repo-push: OK');
+  console.log(JSON.stringify({
+    remoteRoot: { id: result.root.id, name: result.root.name },
+    uploaded: result.uploaded.length,
+    skipped: result.skipped.length,
+  }, null, 2));
+}
+
+async function repoPullCommand(args) {
+  const credentials = requireRepositoryCredentials();
+  const result = await pullRepositoryFromPikPak({
+    repoDir: resolve(args.repoDir),
+    cdpUrl: args.cdpUrl,
+    remoteFolderName: args.remoteRepoName,
+    overwrite: args.overwrite,
+    onEvent: createRepositoryRemoteEventPrinter('pull'),
+  });
+
+  // 下载完成立即验证。默认 full 会真正解密/解压/hash 每个 chunk；--quick 只验证 header、
+  // snapshot 与 pack TOC，适合先检查超大仓库结构，后续 restore 仍会逐 chunk 验证。
+  const verified = await verifyRepository({
+    repoDir: resolve(args.repoDir),
+    full: !args.quick,
+    ...credentials,
+  });
+  if (!verified.ok) {
+    console.log(JSON.stringify(verified, null, 2));
+    throw new Error('repo-pull 下载完成但密码学完整性验证失败。');
+  }
+
+  console.log(`repo-pull: OK${args.quick ? ' (quick verify)' : ' (full verify)'}`);
+  console.log(JSON.stringify({
+    remoteRoot: { id: result.root.id, name: result.root.name },
+    downloaded: result.downloaded.length,
+    skipped: result.skipped.length,
+    ignoredRemoteObjects: result.ignoredRemoteObjects.length,
+    packs: verified.packs,
+    chunks: verified.chunks,
+    snapshots: verified.snapshots,
+  }, null, 2));
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
@@ -936,6 +1044,10 @@ async function main() {
     await repoRestoreCommand(args);
   } else if (args.command === 'repo-verify') {
     await repoVerifyCommand(args);
+  } else if (args.command === 'repo-push') {
+    await repoPushCommand(args);
+  } else if (args.command === 'repo-pull') {
+    await repoPullCommand(args);
   }
 }
 

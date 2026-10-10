@@ -21,7 +21,7 @@ import {
   rm,
   stat,
 } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 import { isSafeAliyunRegion } from './aliyun-endpoint.mjs';
 import { sha1File } from './file-hash.mjs';
@@ -176,9 +176,7 @@ export async function downloadPikPakFile(web, remoteFile, destinationPath, {
   }
 
   const outputPath = resolve(destinationPath);
-  await mkdir(resolve(outputPath, '..'), { recursive: true }).catch(async () => {
-    // 上面 resolve(file,'..') 在 Node path 语义里不是 dirname；fallback 由调用方预创建目录。
-  });
+  await mkdir(dirname(outputPath), { recursive: true });
   const tempPath = `${outputPath}.partial-${process.pid}-${randomBytes(6).toString('hex')}`;
   const handle = await open(tempPath, 'wx');
   let written = 0;

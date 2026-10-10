@@ -19,6 +19,7 @@
 - 当前 Web bundle 的远端仓库所需 API 已完成实机定位：`18839.x3 -> POST /files` 可用 `kind=drive#folder` 创建文件夹；`18839.oc -> GET /files?...` 支持 parent_id/page_token 分页列目录；`18839.UV -> GET /files/{id}` 返回普通文件详情，正文链接在 `links['application/octet-stream'].url`。已把三项封装进 `PikPakWebSession`，下载签名 URL 用 private ticket 包装，默认 stringify/inspect 永不泄露 URL/token。
 - 云同步前补齐 repository v1 header 完整性：`repo.json` 除 key-slot 自身 AEAD 外，现在还用 master-key HKDF 派生独立 header-auth key，以 AES-256-GCM 空明文 + canonical JSON AAD 认证全部公开 header 字段。这样存储侧修改 CDC/pack/算法/slot 元数据也会在解锁后立即报“header 认证失败”，不会静默接受被篡改配置。
 - 远端同步层第一版已落地：默认仓库根 `PikPak-Direct Vault`；远端平铺为 `repo.json`、`pack-<随机id>.ppdp`、`snapshot-<随机id>.ppds`，不上传 latest.json，也不暴露用户原始文件名/路径/chunk hash。push 复用 Route A 的 Node->OSS 数据面；pull 用 private signed download ticket 原子下载。固定 repo.json 推送时强制下载远端副本逐字节核对，immutable pack/snapshot 同名但 size/status 冲突时直接失败，不覆盖猜测。
+- CLI 已增加 `repo-push/repo-pull`：push 在联网前先用仓库凭据做 full verify，再经 Route A 上传缺失对象；pull 要求 recovery/password，下载完默认 full verify，确保“PikPak 账号 + recovery secret”足以从空本地状态重建并验证 repository。远端根名称可用 `--remote-repo-name` 改写，默认稳定为 `PikPak-Direct Vault`。
 - 新仓库测试首轮暴露的唯一前置失败是测试 pack 设为 128/256 KiB，而初始化器把 packTargetBytes 最低限制为 1 MiB；该限制与格式/密码学无关，已放宽为 64 KiB，生产默认仍保持 128 MiB，便于快速覆盖多 pack 与损坏隔离测试。
 - 仓库 round-trip 已实际通过：第二个增量 snapshot 能在没有本地 index/cache、没有 password 的情况下，仅凭 recovery key 扫描 pack TOC + snapshot 完整恢复，逐文件 SHA-256 一致。剩余“单 pack 损坏隔离”测试失败定位为夹具数据具有 256-byte 周期、被 Brotli 极度压缩而没形成多 pack；已改为固定 seed xorshift32 不可压缩夹具，确保测试真的覆盖多个 pack。
 
