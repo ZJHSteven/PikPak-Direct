@@ -10,6 +10,7 @@ import test from 'node:test';
 
 import {
   PikPakWebSession,
+  buildCreateFolderBody,
   buildCloudDownloadBody,
   webpackBootstrapExpression,
 } from '../src/pikpak-web-session.mjs';
@@ -118,6 +119,22 @@ test('Cloud Download 请求体使用 UPLOAD_TYPE_URL 且根目录使用 DOWNLOAD
     () => buildCloudDownloadBody({ url: 'http://127.0.0.1/file' }),
     /必须是 HTTPS/,
   );
+});
+
+test('普通文件夹创建请求体固定为 drive#folder + NORMAL', () => {
+  assert.deepEqual(buildCreateFolderBody({ name: 'PikPak-Direct Vault' }), {
+    kind: 'drive#folder',
+    name: 'PikPak-Direct Vault',
+    parent_id: '',
+    folder_type: 'NORMAL',
+  });
+  assert.deepEqual(buildCreateFolderBody({ name: 'packs', parentId: 'parent-1' }), {
+    kind: 'drive#folder',
+    name: 'packs',
+    parent_id: 'parent-1',
+    folder_type: 'NORMAL',
+  });
+  assert.throws(() => buildCreateFolderBody({ name: '' }), /不能为空/);
 });
 
 test('当前 Web bundle 的回收站与永久删除导出名必须保持区分', () => {

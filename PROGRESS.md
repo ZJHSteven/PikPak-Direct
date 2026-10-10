@@ -16,6 +16,7 @@
 - 上述五个 repository 命令的执行层已接通：`repo-init` 先原子创建独立 recovery 文件、再提交 repo header，失败会清理孤儿 recovery 文件；backup/list/restore/verify 统一只从环境变量取凭据。CLI 输出只包含 repoId/snapshotId/统计与路径，不回显 password/recovery key。下一步进行独立 CLI 进程端到端 smoke。
 - 真实 CLI 进程端到端 smoke 已通过：临时仓库初始化并把 recovery key 写到 repo 外；备份 2 个文件；随后删除 `PIKPAK_REPO_PASSWORD`，只从 recovery 文件读入 `PIKPAK_REPO_RECOVERY_KEY` 完成 snapshot 枚举、full verify、fresh restore，最后 PowerShell SHA-256 对比一致并输出 `CLI_SMOKE_OK`。测试目录已在 finally 清理。
 - 继续反查 PikPak Web 远端目录能力时发现 Route A acquire 的一个共享 Chrome 性能/隔离问题：lease state 没有 targetId 时旧代码会逐个连接 9222 的所有普通 page target 读取 `window.name`，日常 Chrome 页面多时可能被某个异常 target 卡住。已收窄为“精确 preferred targetId + 其余仅 mypikpak.com/drive 页面”；普通日常网页不再建立 CDP WebSocket。
+- 当前 Web bundle 的远端仓库所需 API 已完成实机定位：`18839.x3 -> POST /files` 可用 `kind=drive#folder` 创建文件夹；`18839.oc -> GET /files?...` 支持 parent_id/page_token 分页列目录；`18839.UV -> GET /files/{id}` 返回普通文件详情，正文链接在 `links['application/octet-stream'].url`。已把三项封装进 `PikPakWebSession`，下载签名 URL 用 private ticket 包装，默认 stringify/inspect 永不泄露 URL/token。
 - 新仓库测试首轮暴露的唯一前置失败是测试 pack 设为 128/256 KiB，而初始化器把 packTargetBytes 最低限制为 1 MiB；该限制与格式/密码学无关，已放宽为 64 KiB，生产默认仍保持 128 MiB，便于快速覆盖多 pack 与损坏隔离测试。
 - 仓库 round-trip 已实际通过：第二个增量 snapshot 能在没有本地 index/cache、没有 password 的情况下，仅凭 recovery key 扫描 pack TOC + snapshot 完整恢复，逐文件 SHA-256 一致。剩余“单 pack 损坏隔离”测试失败定位为夹具数据具有 256-byte 周期、被 Brotli 极度压缩而没形成多 pack；已改为固定 seed xorshift32 不可压缩夹具，确保测试真的覆盖多个 pack。
 

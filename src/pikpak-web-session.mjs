@@ -50,6 +50,17 @@ export function buildCloudDownloadBody({ url, parentId = '' }) {
   };
 }
 
+/** 构造当前 PikPak Web `POST /files` 使用的普通文件夹创建请求体。 */
+export function buildCreateFolderBody({ name, parentId = '' }) {
+  if (!String(name || '').trim()) throw new Error('文件夹名称不能为空。');
+  return {
+    kind: 'drive#folder',
+    name: String(name),
+    parent_id: String(parentId || ''),
+    folder_type: 'NORMAL',
+  };
+}
+
 /**
  * 对象代表一次 PikPak 上传任务。
  *
@@ -110,6 +121,42 @@ export class PikPakUploadSession {
   /**
    * console.log / util.inspect 同样走脱敏输出，降低调试误泄露风险。
    */
+  [inspect.custom]() {
+    return this.toJSON();
+  }
+}
+
+/**
+ * PikPak 下载签名 URL 的内存包装器。
+ * URL 往往包含短期 token/query secret；默认打印/序列化永远不暴露完整 URL。
+ */
+export class PikPakDownloadTicket {
+  #url;
+
+  constructor({ fileId, name, size, hash, url, expire = null }) {
+    this.fileId = fileId;
+    this.name = name;
+    this.size = Number(size);
+    this.hash = hash || '';
+    this.expire = expire;
+    this.#url = String(url || '');
+  }
+
+  getUrl() {
+    return this.#url;
+  }
+
+  toJSON() {
+    return {
+      fileId: this.fileId,
+      name: this.name,
+      size: this.size,
+      hash: this.hash,
+      expire: this.expire,
+      url: '<redacted-signed-url>',
+    };
+  }
+
   [inspect.custom]() {
     return this.toJSON();
   }
@@ -441,6 +488,127 @@ export class PikPakWebSession {
       throw new Error(`PikPak 创建 Cloud Download 任务失败: ${detail}`);
     }
     return result;
+  }
+
+  /**
+   * 创建普通 PikPak Drive 文件夹。
+   * 2026-10-11 实机 probe 已验证：module 18839.x3 -> POST /files，body.kind=drive#folder。
+   */
+  async createFolder({ name, parentId = '' }) {
+    const body = buildCreateFolderBody({ name, parentId });
+    const expression = `(async()=>{
+      ${webpackBootstrapExpression()}
+      const fileApi=__ppReq(${WEBPACK_MODULES.fileAndTaskApi});
+      const response=await fileApi.x3(${JSON.stringify(body)});
+      const data=response?.data?.value||response?.data||response;
+      const error=response?.error?.value||response?.error||null;
+      if(error?.error){
+        return {ok:false,errorCode:error.error||null,errorDescription:error.message||error.error_description||null};
+      }
+      const file=data?.file||null;
+      if(!file?.id){
+        return {ok:false,errorCode:'FILE_ID_MISSING',errorDescription:'folder create response has no file id'};
+      }
+      return {
+        ok:true,
+        file:{
+          id:file.id,
+          name:file.name||${JSON.stringify(String(name))},
+          kind:file.kind||'drive#folder',
+          parentId:file.parent_id||'',
+          folderType:file.folder_type||'NORMAL',
+          trashed:Boolean(file.trashed)
+        }
+      };
+    })()`;
+    const evaluation = await this.cdp.call('Runtime.evaluate', {
+      expression,
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    const result = unwrapEvaluation(evaluation);
+    if (!result?.ok) {
+      throw new Error(`PikPak 创建文件夹失败: ${result?.errorDescription || result?.errorCode || 'unknown'}`);
+    }
+    return result.file;
+  }
+
+  /**
+   * 列出一个 Drive 目录的一页内容。
+   * 只把仓库同步需要的稳定字段带回 Node；缩略图、媒体信息、分享 token 等一律丢弃。
+   */
+  async listFiles({ parentId = '', pageToken = '', limit = 100 } = {}) {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
+      throw new Error('PikPak listFiles limit 必须是 1~1000 的整数。');
+    }
+    const params = {
+      parent_id: String(parentId || ''),
+      limit,
+      thumbnail_size: 'SIZE_SMALL',
+      ...(pageToken ? { page_token: String(pageToken) } : {}),
+    };
+    const expression = `(async()=>{
+      ${webpackBootstrapExpression()}
+      const fileApi=__ppReq(${WEBPACK_MODULES.fileAndTaskApi});
+      const response=await fileApi.oc(${JSON.stringify(params)});
+      const data=response?.data?.value||response?.data||response;
+      return {
+        nextPageToken:data?.next_page_token||'',
+        files:(data?.files||[]).map(file=>({
+          id:file.id||'',
+          name:file.name||'',
+          kind:file.kind||'',
+          parentId:file.parent_id||'',
+          size:Number(file.size||0),
+          hash:file.hash||'',
+          phase:file.phase||'',
+          trashed:Boolean(file.trashed),
+          modifiedTime:file.modified_time||'',
+          folderType:file.folder_type||''
+        }))
+      };
+    })()`;
+    const evaluation = await this.cdp.call('Runtime.evaluate', {
+      expression,
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    return unwrapEvaluation(evaluation);
+  }
+
+  /**
+   * 获取普通文件的短期下载 ticket；完整签名 URL 只保存在 private field 中。
+   * 当前 Web bundle module 18839.UV -> GET /files/{id}，正文链接位于
+   * links['application/octet-stream'].url，web_content_link 仅作为兼容 fallback。
+   */
+  async getDownloadTicket(fileId) {
+    if (!fileId) throw new Error('fileId 不能为空。');
+    const expression = `(async()=>{
+      ${webpackBootstrapExpression()}
+      const fileApi=__ppReq(${WEBPACK_MODULES.fileAndTaskApi});
+      const response=await fileApi.UV(${JSON.stringify(String(fileId))},{});
+      const file=response?.data?.value||response?.data||response;
+      const link=file?.links?.['application/octet-stream']||null;
+      const url=link?.url||file?.web_content_link||'';
+      return {
+        fileId:file?.id||${JSON.stringify(String(fileId))},
+        name:file?.name||'',
+        size:Number(file?.size||0),
+        hash:file?.hash||'',
+        url,
+        expire:link?.expire||null
+      };
+    })()`;
+    const evaluation = await this.cdp.call('Runtime.evaluate', {
+      expression,
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    const result = unwrapEvaluation(evaluation);
+    if (!/^https:\/\//i.test(String(result?.url || ''))) {
+      throw new Error(`PikPak file ${fileId} 没有可用 HTTPS 下载链接。`);
+    }
+    return new PikPakDownloadTicket(result);
   }
 
   /**
