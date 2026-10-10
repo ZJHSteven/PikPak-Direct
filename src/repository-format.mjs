@@ -60,6 +60,58 @@ function jsonBuffer(value) {
   return Buffer.from(JSON.stringify(value), 'utf8');
 }
 
+/**
+ * header 认证必须与 JSON 文件里的属性顺序无关，否则普通格式化/重写都会被误判为篡改。
+ * 这里只允许 JSON 数据类型；对象 key 递归排序、数组保持原顺序，得到稳定字节表示。
+ */
+function stableJson(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((item) => stableJson(item)).join(',')}]`;
+  return `{${Object.keys(value).sort().map((key) => (
+    `${JSON.stringify(key)}:${stableJson(value[key])}`
+  )).join(',')}}`;
+}
+
+function headerAuthAad(header) {
+  const { headerAuth: _ignored, ...authenticated } = header;
+  return Buffer.from(stableJson(authenticated), 'utf8');
+}
+
+function createRepositoryHeaderAuth(header, masterKey) {
+  const key = deriveContextKey(masterKey, header.repoId, 'repository-header-auth');
+  try {
+    // 明文故意为空：这里需要的是“对公开 header 做不可伪造认证”，而不是再加密一份 header。
+    const sealed = sealBuffer(Buffer.alloc(0), key, headerAuthAad(header));
+    return {
+      version: 1,
+      algorithm: 'aes-256-gcm-empty-plaintext-aad',
+      nonce: toBase64Url(sealed.nonce),
+      tag: toBase64Url(sealed.tag),
+    };
+  } finally {
+    key.fill(0);
+  }
+}
+
+function verifyRepositoryHeaderAuth(header, masterKey) {
+  const auth = header?.headerAuth;
+  if (auth?.version !== 1 || auth?.algorithm !== 'aes-256-gcm-empty-plaintext-aad') {
+    throw new Error('repo.json 缺少受支持的 headerAuth。');
+  }
+  const key = deriveContextKey(masterKey, header.repoId, 'repository-header-auth');
+  try {
+    openBuffer({
+      nonce: fromBase64Url(auth.nonce, 'headerAuth nonce'),
+      tag: fromBase64Url(auth.tag, 'headerAuth tag'),
+      ciphertext: Buffer.alloc(0),
+    }, key, headerAuthAad(header));
+  } catch {
+    throw new Error('repo.json header 认证失败：文件已损坏或被篡改。');
+  } finally {
+    key.fill(0);
+  }
+}
+
 async function atomicWriteFile(path, data) {
   const temp = `${path}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`;
   await writeFile(temp, data);
@@ -155,6 +207,7 @@ export async function initializeRepository(repoDir, {
     },
     keySlots,
   };
+  header.headerAuth = createRepositoryHeaderAuth(header, masterKey);
 
   await atomicWriteJson(headerPath, header);
   return {
@@ -181,6 +234,12 @@ export async function unlockRepository(repoDir, credentials = {}) {
   const root = resolve(repoDir);
   const header = await loadRepositoryHeader(root);
   const masterKey = unlockMasterKey(header, credentials);
+  try {
+    verifyRepositoryHeaderAuth(header, masterKey);
+  } catch (error) {
+    masterKey.fill(0);
+    throw error;
+  }
   return { repoDir: root, header, masterKey };
 }
 
