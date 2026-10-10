@@ -7,6 +7,8 @@
 - Cloudflare 账号已只读核实：专用 Remote-managed Tunnel 名为 `PikPak-RouteB`，固定 ingress 为 `pikpak-pull.zjhstudio.com -> http://127.0.0.1:18765`，当前 connector 可按任务临时上线；DevSpace Secrets 已存在 `pikpak_routeb_tunnel_token`。正式实现用 child env `TUNNEL_TOKEN` 注入，不把 token 放进 cloudflared argv、源码或日志。
 - cloud-pull 已切换为 Named Tunnel 模型：固定 18765 loopback origin + 临时 connector + 固定公网 hostname HEAD gate；不创建/删除 Tunnel，不改 DNS。并增加默认 4x 正文发送硬预算，超预算 GET 在发正文前拒绝，以限制此前实测 5.58x 的回拉放大。
 - 本轮终点扩展为整个 PikPak CLI 收口：完成上述两项后继续实现客户端加密仓库、CDC/pack、snapshot/index 与 fresh-machine restore，不在 Route A/B 停止。
+- 加密仓库 v1 已开始落地：新增随机 256-bit master key 的密码/recovery 双 key-slot 基础设施。Password slot 用 scrypt（默认约 128 MiB 工作集）派生 KEK；recovery slot 使用独立 256-bit recovery secret + HKDF；正文用途再以 repoId + context 做 HKDF 域隔离。AES-256-GCM 统一提供机密性与篡改检测。
+- CDC 已落地为 `fastcdc-gear32-v1`：固定 seed 的 Gear hash + min/avg/max 双 mask，支持真正流式文件分块；局部插入后边界会重新同步，为 chunk-level 去重/增量提供稳定基础。
 
 - Live Ops 已新增两个独立子项：Route A“Chrome 生命周期与自动登录”、Route B“Cloud Download 无网页 fallback”，均置为 doing。
 - Route A 当前已做独立登录页实测：全新 9333 临时 Chrome 访问 /drive 会跳到 /drive/login?redirect=/all；默认可见 Google/Facebook/Apple 登录，底部有手机/邮箱/二维码入口；点击邮箱后出现“请输入邮箱”“请输入密码”和“登录”按钮。

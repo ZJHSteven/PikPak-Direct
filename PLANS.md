@@ -38,8 +38,8 @@
 ### 加密仓库 / CDC / 恢复链
 
 - [ ] 定义稳定的 repository header、key slot、pack、chunk、snapshot、index 版本格式；除最小魔数/版本/算法标识外，文件名、路径、元数据和正文均加密。
-- [ ] master key 随机生成；至少支持 password slot + recovery slot 两个独立包装入口，任何 slot 都只包装 master key，不重复加密仓库正文。
-- [ ] 使用内容定义分块（CDC）生成稳定 chunk 边界，chunk hash 只作为本地/密文索引键使用，避免将原始文件路径或明文元数据暴露到远端对象名。
+- [x] master key 随机生成；已实现 password slot + recovery slot 两个独立包装入口，任何 slot 都只包装 master key；口令使用 scrypt，recovery key 使用 HKDF，上层正文子密钥继续按用途 HKDF 隔离。
+- [x] 已实现 `fastcdc-gear32-v1` 流式内容定义分块：固定 Gear seed、min/avg/max 双 mask、跨 read buffer 保持边界；chunk id 后续使用 SHA-256，且只进入加密 snapshot/TOC。
 - [ ] chunk 压缩后 AEAD 加密并聚合进 pack；pack 末尾带可独立扫描的加密 TOC，使本地 SQLite 丢失后可从远端 pack 重建索引。
 - [ ] snapshot manifest 记录目录树、文件元数据和 chunk 引用；全量加密并通过不可变对象写入，最新 snapshot 指针采用可恢复更新策略。
 - [ ] 本地 SQLite 只作为缓存/加速层，不是恢复所必需；fresh machine 只凭 PikPak 账号 + recovery secret 能枚举仓库、解锁、重建索引并恢复文件。
