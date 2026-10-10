@@ -22,9 +22,9 @@
 // - 失败/超时默认也不自动删除远端 placeholder，避免把“最终一致性延迟”误当失败后误删；
 // - 只有显式 --trash-after-success 才在成功后把本次文件移入 PikPak 回收站，主要用于 smoke test。
 
-import { basename, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import process from 'node:process';
-import { stat } from 'node:fs/promises';
+import { mkdir, open, rm, stat } from 'node:fs/promises';
 
 import { sha1File } from '../src/file-hash.mjs';
 import { uploadFileToPikPakOss } from '../src/oss-uploader.mjs';
@@ -41,10 +41,32 @@ import {
   validateNamedTunnelRoute,
   waitForNamedTunnelFileHead,
 } from '../src/cloudflare-named-tunnel.mjs';
+import {
+  backupRepository,
+  listRepositorySnapshots,
+  restoreRepositorySnapshot,
+  verifyRepository,
+} from '../src/repository-backup.mjs';
+import { initializeRepository } from '../src/repository-format.mjs';
+import { generateRecoveryKey } from '../src/repo-crypto.mjs';
 
 const DEFAULT_CDP_URL = 'http://127.0.0.1:9222';
 
 function printHelp() {
+  console.log(`加密仓库 v1：
+  pikpak-direct repo-init <repo-dir> --recovery-key-out <独立文件>
+  pikpak-direct repo-backup <repo-dir> <file-or-directory>
+  pikpak-direct repo-list <repo-dir>
+  pikpak-direct repo-restore <repo-dir> <destination-dir> [--snapshot <id>] [--overwrite]
+  pikpak-direct repo-verify <repo-dir> [--quick]
+
+仓库凭据不接受命令行明文参数：
+  PIKPAK_REPO_PASSWORD      password slot；repo-init 必须提供。
+  PIKPAK_REPO_RECOVERY_KEY recovery slot；backup/list/restore/verify 可与 password 二选一。
+
+repo-init 会把新 recovery key 写入 --recovery-key-out 指定的独立文件；该文件禁止放进 repo-dir，
+不会自动上传 PikPak。请把它作为真正的灾难恢复凭据另行保存。
+`);
   console.log(`新增冷迁移命令：
   pikpak-direct migrate <file-or-directory> [--manifest <path>] [--backup-id <id>] [--dry-run]
   pikpak-direct cloud-pull <local-file>
@@ -92,18 +114,48 @@ function parseArgs(argv) {
   }
 
   const command = argv[0];
-  if (!new Set(['upload', 'cloud-pull', 'migrate', 'inspect-manifest', 'verify-local']).has(command)) {
+  const knownCommands = new Set([
+    'upload',
+    'cloud-pull',
+    'migrate',
+    'inspect-manifest',
+    'verify-local',
+    'repo-init',
+    'repo-backup',
+    'repo-list',
+    'repo-restore',
+    'repo-verify',
+  ]);
+  if (!knownCommands.has(command)) {
     throw new Error(`未知命令: ${command}`);
   }
 
-  const localFile = argv[1];
-  if (!localFile || localFile.startsWith('--')) {
-    throw new Error('upload 命令必须提供本地文件路径。');
+  const repoCommand = command.startsWith('repo-');
+  const repoDir = repoCommand ? argv[1] : null;
+  const repoTwoPositionals = command === 'repo-backup' || command === 'repo-restore';
+  const secondRepoPath = repoTwoPositionals ? argv[2] : null;
+  const localFile = repoCommand ? null : argv[1];
+
+  if (repoCommand) {
+    if (!repoDir || repoDir.startsWith('--')) throw new Error(`${command} 必须提供 <repo-dir>。`);
+    if (repoTwoPositionals && (!secondRepoPath || secondRepoPath.startsWith('--'))) {
+      throw new Error(`${command} 缺少第二个路径参数。`);
+    }
+  } else if (!localFile || localFile.startsWith('--')) {
+    throw new Error(`${command} 必须提供本地路径。`);
   }
 
   const args = {
     command,
     localFile,
+    repoDir,
+    repoSourcePath: command === 'repo-backup' ? secondRepoPath : null,
+    repoDestinationDir: command === 'repo-restore' ? secondRepoPath : null,
+    recoveryKeyOut: null,
+    snapshotId: null,
+    overwrite: false,
+    quick: false,
+    packTargetMiB: null,
     region: null,
     route: 'direct-only',
     remoteName: null,
@@ -122,7 +174,8 @@ function parseArgs(argv) {
     routeBMaxReadMultiplier: 4,
   };
 
-  for (let index = 2; index < argv.length; index += 1) {
+  const firstFlagIndex = repoCommand ? (repoTwoPositionals ? 3 : 2) : 2;
+  for (let index = firstFlagIndex; index < argv.length; index += 1) {
     const flag = argv[index];
     const value = argv[index + 1];
 
@@ -170,6 +223,19 @@ function parseArgs(argv) {
     } else if (flag === '--routeb-max-read-multiplier') {
       args.routeBMaxReadMultiplier = Number(value);
       index += 1;
+    } else if (flag === '--recovery-key-out') {
+      args.recoveryKeyOut = value;
+      index += 1;
+    } else if (flag === '--snapshot') {
+      args.snapshotId = value;
+      index += 1;
+    } else if (flag === '--overwrite') {
+      args.overwrite = true;
+    } else if (flag === '--quick') {
+      args.quick = true;
+    } else if (flag === '--pack-target-mib') {
+      args.packTargetMiB = Number(value);
+      index += 1;
     } else {
       throw new Error(`未知参数: ${flag}`);
     }
@@ -179,6 +245,20 @@ function parseArgs(argv) {
 }
 
 function validateArgs(args) {
+  if (args.command.startsWith('repo-')) {
+    if (args.command === 'repo-init') {
+      if (!args.recoveryKeyOut) throw new Error('repo-init 必须提供 --recovery-key-out <独立文件>。');
+      if (args.packTargetMiB !== null
+        && (!Number.isFinite(args.packTargetMiB) || args.packTargetMiB < 1 || args.packTargetMiB > 4096)) {
+        throw new Error('--pack-target-mib 必须是 1~4096 的数字。');
+      }
+    }
+    if (args.snapshotId && !/^[a-f0-9]{32}$/i.test(args.snapshotId)) {
+      throw new Error('--snapshot 必须是 32 位十六进制 snapshot id。');
+    }
+    return;
+  }
+
   if (args.command === 'inspect-manifest' || args.command === 'verify-local') return;
 
   if (!['direct-only', 'prefer-direct', 'server'].includes(args.route)) {
@@ -208,6 +288,22 @@ function validateArgs(args) {
       throw new Error('--routeb-max-read-multiplier 必须是 1~20 的数字。');
     }
   }
+}
+
+/**
+ * 仓库凭据只从进程环境进入内存，不提供 --password/--recovery-key 参数。
+ * 这避免 secret 出现在 shell history、任务计划参数、CIM Process CommandLine 等常见位置。
+ */
+function repositoryCredentialsFromEnv() {
+  return {
+    password: process.env.PIKPAK_REPO_PASSWORD || '',
+    recoveryKey: process.env.PIKPAK_REPO_RECOVERY_KEY || '',
+  };
+}
+
+function pathIsInside(parentPath, childPath) {
+  const rel = relative(resolve(parentPath), resolve(childPath));
+  return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel));
 }
 
 function formatBytes(bytes) {

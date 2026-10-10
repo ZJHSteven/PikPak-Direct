@@ -12,6 +12,7 @@
 - repository v1 对象格式已落地：`repo.json` 只保存最小公开 header/key slots；pack 逐 chunk 压缩+AES-GCM，末尾加密 TOC；snapshot 将原始路径、文件名、mtime、whole-file hash 和 chunk 顺序整体加密。远端 pack 文件名只需要随机 packId，不暴露 chunk hash。
 - pack index 不再依赖 SQLite：`rebuildPackIndex()` 只读每个 pack 的 header/footer/加密 TOC 即可恢复 `chunkId -> pack/offset`；单 pack TOC 损坏会被隔离进 errors，不阻塞其他 pack 扫描。
 - 离线灾难恢复主流程已实现：backup 做 chunk-level 去重与不可变 snapshot；restore 可仅用 recovery key 重新扫描 pack/snapshot 并逐文件 hash 校验；verify-repo 可全量逐 chunk 解密/解压/SHA-256 体检。
+- 加密仓库 CLI 接口开始接入现有 `pikpak-direct`：参数层已加入 `repo-init/repo-backup/repo-list/repo-restore/repo-verify`，并明确禁止把 password/recovery key 放进 argv；凭据只读 `PIKPAK_REPO_PASSWORD` / `PIKPAK_REPO_RECOVERY_KEY`。`repo-init` 强制要求独立的 `--recovery-key-out`，且 recovery 文件不能位于 repo-dir 内。下一提交补齐各命令执行函数与端到端 CLI smoke。
 - 新仓库测试首轮暴露的唯一前置失败是测试 pack 设为 128/256 KiB，而初始化器把 packTargetBytes 最低限制为 1 MiB；该限制与格式/密码学无关，已放宽为 64 KiB，生产默认仍保持 128 MiB，便于快速覆盖多 pack 与损坏隔离测试。
 - 仓库 round-trip 已实际通过：第二个增量 snapshot 能在没有本地 index/cache、没有 password 的情况下，仅凭 recovery key 扫描 pack TOC + snapshot 完整恢复，逐文件 SHA-256 一致。剩余“单 pack 损坏隔离”测试失败定位为夹具数据具有 256-byte 周期、被 Brotli 极度压缩而没形成多 pack；已改为固定 seed xorshift32 不可压缩夹具，确保测试真的覆盖多个 pack。
 

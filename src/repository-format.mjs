@@ -32,6 +32,7 @@ import {
   createRecoverySlot,
   deriveContextKey,
   generateRecoveryKey,
+  parseRecoveryKey,
   openBuffer,
   sealBuffer,
   sha256Hex,
@@ -90,6 +91,7 @@ function snapshotAad(repoId, snapshotId) {
  */
 export async function initializeRepository(repoDir, {
   password,
+  recoveryKey = '',
   scryptParams = DEFAULT_SCRYPT_PARAMS,
   cdc = DEFAULT_CDC_OPTIONS,
   packTargetBytes = 128 * 1024 * 1024,
@@ -118,7 +120,12 @@ export async function initializeRepository(repoDir, {
 
   const repoId = randomBytes(16).toString('hex');
   const masterKey = randomBytes(32);
-  const recovery = generateRecoveryKey();
+  // CLI 可以先把 recovery key 安全写到用户指定的独立文件，再把同一 key 传进来初始化。
+  // 这样即使 repo 初始化阶段后续失败，也不会出现“仓库已生成但 recovery key 只存在于
+  // 已退出进程内存里”的不可恢复窗口。库调用方不传时仍保持原有一次性生成行为。
+  const recovery = recoveryKey
+    ? { raw: parseRecoveryKey(recoveryKey), text: recoveryKey }
+    : generateRecoveryKey();
   const keySlots = [
     createPasswordSlot({ repoId, masterKey, password, scryptParams }),
     createRecoverySlot({ repoId, masterKey, recoveryKeyRaw: recovery.raw }),
