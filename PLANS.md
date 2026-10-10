@@ -45,6 +45,7 @@
 - [x] 离线 fresh-machine 恢复链已实现：不依赖 SQLite/cache，只凭 repo 对象 + password/recovery key 重建 pack index、逐 chunk AEAD/hash 校验并原子恢复文件。下一步把这些对象同步/枚举到 PikPak 固定仓库根目录。
 - [x] CLI 已增加 `repo-init / repo-backup / repo-list / repo-restore / repo-verify`；凭据只从环境/Secret 注入，不允许 password/recovery key 进入 argv。`repo-init` 强制把 recovery key 写到 repo-dir 外的独立文件且不回显。库级 round-trip、去重、增量、损坏隔离与错误凭据测试已覆盖；下一步跑真实 CLI 进程 smoke 并接 PikPak 远端仓库同步。
 - [x] 独立 CLI 进程 smoke 已通过：`repo-init -> repo-backup -> 清除 password -> 只用 recovery key -> repo-list -> full verify -> repo-restore -> SHA-256 compare`，最终 `CLI_SMOKE_OK`，且 recovery key 未出现在 CLI 输出。
+- [ ] 接入 PikPak 远端仓库同步：固定可见根目录默认 `PikPak-Direct Vault`；push 只新增缺失的 immutable pack/snapshot，固定 `repo.json` 必须逐字节一致；pull 通过分页枚举 + private signed download ticket 物化完整本地 repo，随后可只凭 recovery key 恢复。
 
 ## 2026-10-10：手机冷备实战 / 0 字节文件边界修复
 
