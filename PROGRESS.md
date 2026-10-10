@@ -14,6 +14,7 @@
 - 离线灾难恢复主流程已实现：backup 做 chunk-level 去重与不可变 snapshot；restore 可仅用 recovery key 重新扫描 pack/snapshot 并逐文件 hash 校验；verify-repo 可全量逐 chunk 解密/解压/SHA-256 体检。
 - 加密仓库 CLI 接口开始接入现有 `pikpak-direct`：参数层已加入 `repo-init/repo-backup/repo-list/repo-restore/repo-verify`，并明确禁止把 password/recovery key 放进 argv；凭据只读 `PIKPAK_REPO_PASSWORD` / `PIKPAK_REPO_RECOVERY_KEY`。`repo-init` 强制要求独立的 `--recovery-key-out`，且 recovery 文件不能位于 repo-dir 内。下一提交补齐各命令执行函数与端到端 CLI smoke。
 - 上述五个 repository 命令的执行层已接通：`repo-init` 先原子创建独立 recovery 文件、再提交 repo header，失败会清理孤儿 recovery 文件；backup/list/restore/verify 统一只从环境变量取凭据。CLI 输出只包含 repoId/snapshotId/统计与路径，不回显 password/recovery key。下一步进行独立 CLI 进程端到端 smoke。
+- 真实 CLI 进程端到端 smoke 已通过：临时仓库初始化并把 recovery key 写到 repo 外；备份 2 个文件；随后删除 `PIKPAK_REPO_PASSWORD`，只从 recovery 文件读入 `PIKPAK_REPO_RECOVERY_KEY` 完成 snapshot 枚举、full verify、fresh restore，最后 PowerShell SHA-256 对比一致并输出 `CLI_SMOKE_OK`。测试目录已在 finally 清理。
 - 新仓库测试首轮暴露的唯一前置失败是测试 pack 设为 128/256 KiB，而初始化器把 packTargetBytes 最低限制为 1 MiB；该限制与格式/密码学无关，已放宽为 64 KiB，生产默认仍保持 128 MiB，便于快速覆盖多 pack 与损坏隔离测试。
 - 仓库 round-trip 已实际通过：第二个增量 snapshot 能在没有本地 index/cache、没有 password 的情况下，仅凭 recovery key 扫描 pack TOC + snapshot 完整恢复，逐文件 SHA-256 一致。剩余“单 pack 损坏隔离”测试失败定位为夹具数据具有 256-byte 周期、被 Brotli 极度压缩而没形成多 pack；已改为固定 seed xorshift32 不可压缩夹具，确保测试真的覆盖多个 pack。
 
