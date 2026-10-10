@@ -20,6 +20,9 @@
 - 第一次真实 1 MiB cloud-pull smoke 在 PikPak task 创建前被公网 HEAD gate 拦下：cloudflared 已分配 URL，但立即 fetch 仍报 fetch failed，属于 Quick Tunnel URL 分配与 Edge/connector 真正 ready 之间的竞态。finally 已实测把 cloudflared、HTTP 监听和受管 PikPak tab 全部清零。现已把 HEAD gate 改为 20 秒窗口内重试，仍不发送文件正文。
 - 第二次 smoke 与独立诊断进一步定位：cloudflared 会先打印随机 URL，随后才打印 Registered tunnel connection；只有后者出现后，同一随机域名才由 curl/Node 稳定访问。手工诊断中 Registered 后请求能到 Cloudflare Edge（故意指向不存在 origin 时正确返回 502）。因此 Quick Tunnel ready 条件已从“看到 URL”升级为“同时看到 URL + Registered tunnel connection”，避免首次过早 DNS 查询造成负缓存。
 - 第三次 smoke 遇到 Cloudflare Quick Tunnel 控制面本身超时：api.trycloudflare.com/tunnel 在返回 headers 前 deadline exceeded，cloudflared code=1，仍未创建 PikPak task。Route B 现对“尚未获得已注册 Tunnel”的创建阶段增加最多 3 次有限重试；一旦 Tunnel 已注册则绝不自动换 hostname，避免让已创建的 PikPak task 指向失效 URL。
+- 第四次 smoke 成功拿到已注册 Quick Tunnel、公网 HEAD 通过，并通过 Web x3 真正创建 Cloud Download task。1 MiB 源文件在 180 秒内仍停留 RUNNING/0%，但本机已经收到 14 次 GET（10 次 Range），累计发送 5,847,312 B，约为源文件 5.58 倍；Tunnel 关闭后 task 一度升到 38%，随后额外 2 分钟保持 38% 不动。因此 Route B 当前不能标完成：重复回拉放大已被实证，且需要明确 task 超时清理。
+- 已定位 Web task 删除接口：module 18839.vq -> DELETE /tasks?delete_files=...&task_ids=...。cloud-pull 现对“task 已创建但命令最终未成功”的路径默认 delete_files=true 清理 task/关联未完成文件，然后才关闭 Tunnel/HTTP；同时 getTaskStatus 会持续回收 fileId/fileName/fileSize。
+- 临时 HTTP 源站新增最多 64 条安全 requestLog，仅记录 method/status/Range/plannedBytes，不记录随机 URL/token、IP、Cookie 或 User-Agent，便于下一次 smoke 精确判断 5.58x 放大来自哪些 Range/整文件重试。
 
 ## 2026-10-10 手机冷备实战：P30 Route A 已重新验证，发现并修复空文件边界
 

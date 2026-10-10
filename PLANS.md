@@ -30,6 +30,8 @@
 - [ ] 实现 cloud-pull：启动 loopback 单文件 HTTP -> Quick Tunnel -> 创建 URL task -> 等待完成 -> 无论成功失败都关闭 Tunnel/HTTP。
 - [x] cloud-pull 第一版代码已落盘：loopback HTTP -> cloudflared Quick Tunnel(--no-autoupdate) -> HEAD 预检 -> Web URL task -> waitTaskComplete -> finally 关闭 Web/Tunnel/HTTP；待离线测试与真实小文件 smoke。
 - [ ] 记录 Range/GET 次数和累计发送字节，避免大文件被多次完整回拉导致上行放大。
+- [x] 已记录 GET/HEAD/Range/累计字节，并在真实 1 MiB smoke 观测到 5.58x 读取放大；新增安全 requestLog 精确记录各请求的 Range/计划字节。下一步需基于请求序列定位放大原因后再决定是否允许大文件 Route B。
+- [x] Route B 失败清理语义已补：已创建但未成功的 offline task 在一次性 URL 失效前通过 Web task DELETE(delete_files=true) 清理，不把 RUNNING 尾巴留在 PikPak。
 - [ ] Route A 失败进入 Route B 的条件必须显式、可审计；不能静默改变数据路径或放宽安全策略。
 
 ## 2026-10-10：手机冷备实战 / 0 字节文件边界修复
