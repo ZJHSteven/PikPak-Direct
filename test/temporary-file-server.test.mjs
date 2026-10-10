@@ -101,15 +101,21 @@ test('临时服务器只通过随机精确路径暴露单文件，并正确支�
   assert.equal(post.status, 405);
   assert.equal(post.headers.get('allow'), 'GET, HEAD');
 
-  assert.deepEqual(source.stats, {
-    requests: 6,
-    getRequests: 2,
-    headRequests: 1,
-    rangeRequests: 1,
-    rejectedRequests: 3,
-    // HEAD / 404 / 416 / POST 都不应计入文件正文发送量。
-    bytesServed: content.length + 6,
-  });
+  assert.equal(source.stats.requests, 6);
+  assert.equal(source.stats.getRequests, 2);
+  assert.equal(source.stats.headRequests, 1);
+  assert.equal(source.stats.rangeRequests, 1);
+  assert.equal(source.stats.rejectedRequests, 3);
+  // HEAD / 404 / 416 / POST 都不应计入文件正文发送量。
+  assert.equal(source.stats.bytesServed, content.length + 6);
+  assert.deepEqual(source.stats.requestLog, [
+    { method: 'GET', status: 404, range: null, plannedBytes: 0 },
+    { method: 'HEAD', status: 200, range: null, plannedBytes: 0 },
+    { method: 'GET', status: 200, range: null, plannedBytes: content.length },
+    { method: 'GET', status: 206, range: 'bytes=10-15', plannedBytes: 6 },
+    { method: 'GET', status: 416, range: 'bytes=999-1000', plannedBytes: 0 },
+    { method: 'POST', status: 405, range: null, plannedBytes: 0 },
+  ]);
 });
 
 test('临时服务器拒绝绑定非 loopback 地址', async () => {

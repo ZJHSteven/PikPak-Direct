@@ -95,6 +95,12 @@ export function parseSingleRange(rangeHeader, fileSize) {
  *     rangeRequests: number,
  *     rejectedRequests: number,
  *     bytesServed: number,
+ *     requestLog: Array<{
+ *       method: string,
+ *       status: number,
+ *       range: string|null,
+ *       plannedBytes: number,
+ *     }>,
  *   },
  *   close: () => Promise<void>,
  * }>}
@@ -134,6 +140,13 @@ export async function createTemporaryFileServer({
     rangeRequests: 0,
     rejectedRequests: 0,
     bytesServed: 0,
+    // 只记录协议形态，不记录随机 URL/token、来源 IP、Cookie 或 User-Agent。
+    // 上限 64 条，足够诊断重复 Range/整文件回拉，又不会让长任务无限增长内存。
+    requestLog: [],
+  };
+
+  const recordRequest = (entry) => {
+    if (stats.requestLog.length < 64) stats.requestLog.push(entry);
   };
 
   const server = createServer((request, response) => {
@@ -145,6 +158,7 @@ export async function createTemporaryFileServer({
     // 任意非精确随机路径都按 404 处理，不透露真实文件名、目录或 token 是否接近正确。
     if (requestPath !== publicPath) {
       stats.rejectedRequests += 1;
+      recordRequest({ method, status: 404, range: null, plannedBytes: 0 });
       response.writeHead(404, {
         'Cache-Control': 'no-store',
         'Content-Length': '0',
@@ -155,6 +169,7 @@ export async function createTemporaryFileServer({
 
     if (method !== 'GET' && method !== 'HEAD') {
       stats.rejectedRequests += 1;
+      recordRequest({ method, status: 405, range: null, plannedBytes: 0 });
       response.writeHead(405, {
         Allow: 'GET, HEAD',
         'Cache-Control': 'no-store',
@@ -177,6 +192,12 @@ export async function createTemporaryFileServer({
       const range = parseSingleRange(rangeHeader, fileStat.size);
       if (!range) {
         stats.rejectedRequests += 1;
+        recordRequest({
+          method,
+          status: 416,
+          range: String(rangeHeader),
+          plannedBytes: 0,
+        });
         response.writeHead(416, {
           ...baseHeaders,
           'Content-Range': `bytes */${fileStat.size}`,
@@ -190,6 +211,12 @@ export async function createTemporaryFileServer({
       if (method === 'GET') stats.getRequests += 1;
       if (method === 'HEAD') stats.headRequests += 1;
       const length = range.end - range.start + 1;
+      recordRequest({
+        method,
+        status: 206,
+        range: `bytes=${range.start}-${range.end}`,
+        plannedBytes: method === 'GET' ? length : 0,
+      });
       response.writeHead(206, {
         ...baseHeaders,
         'Content-Range': `bytes ${range.start}-${range.end}/${fileStat.size}`,
@@ -220,6 +247,12 @@ export async function createTemporaryFileServer({
     // 没有 Range 的正常请求到这里才算“已接受”，避免把 416 请求误计为成功 GET/HEAD。
     if (method === 'GET') stats.getRequests += 1;
     if (method === 'HEAD') stats.headRequests += 1;
+    recordRequest({
+      method,
+      status: 200,
+      range: null,
+      plannedBytes: method === 'GET' ? fileStat.size : 0,
+    });
 
     response.writeHead(200, {
       ...baseHeaders,
