@@ -64,15 +64,15 @@
 本轮把项目从“单文件上传器”推进为真正可恢复的冷迁移工具。实现时坚持一个核心原则：
 **云端文件即使脱离本机目录结构，也必须能够仅凭 manifest 无歧义地恢复到原路径。**
 
-- [ ] 新增原子写入的 JSON manifest：记录 schema、backup id、源根目录、创建时间、路由策略与每个文件的相对路径、大小、mtime、SHA-1、远端名、fileId/taskId、上传状态和错误。
-- [ ] 新增 `migrate <file-or-directory>`：目录递归枚举、稳定排序、逐文件上传；默认永不删除本地源文件。
-- [ ] 远端对象名采用 `backup-id + 稳定序号 + basename`，真实层级完全保存在 manifest，避免同名冲突，也避免依赖 PikPak 当前内部的建目录 API。
-- [ ] 迁移中每个状态变化都原子落盘；中断后重新运行同一 manifest 时，已完成且本地元数据未变化的文件直接跳过。
-- [ ] 持久化 Aliyun multipart checkpoint；明确标注其受 PikPak STS 有效期限制，过期不得伪装成可无缝续传。
-- [ ] 迁移完成后生成一份可携带的 manifest 副本；支持把 manifest 本身作为最后一个对象上传到同一 parent-id。
-- [ ] 新增 `inspect-manifest` / `verify-local`，让恢复前可以确认源文件变化、远端映射和完成度。
-- [ ] 第一版加密字段固定为 `encryption: none`。在没有完成真正流式加密前，不提供会产生整文件临时密文副本的“伪加密迁移”。后续优先结合 Cloud Download 临时 HTTP 源实现流式 AEAD/分块加密。
-- [ ] 为 manifest、目录枚举、断点恢复、冲突/源文件变化等边界补单元测试，并跑完整测试套件。
+- [x] 已新增原子写入的 JSON manifest：记录 schema、backup id、源根、路由策略、相对路径、大小/mtime/SHA-1、远端名、fileId/taskId、状态与错误。
+- [x] 已新增 `migrate <file-or-directory>`：目录递归枚举、稳定排序、逐文件上传；默认永不删除本地源文件。
+- [x] 明文 migration 使用 `backup-id + 稳定序号 + basename` 远端名，真实层级保存在 manifest，避免同名冲突。
+- [x] migration 状态变化原子落盘；同一 manifest/backup-id 重跑时，已完成且本地元数据未变化的文件跳过，0 字节文件有独立 manifest-only 语义。
+- [x] 已持久化 Aliyun multipart checkpoint，并明确把 STS 过期视为续传边界，不把过期 checkpoint 伪装成可无缝续传。
+- [x] 迁移完成可生成 portable manifest，并支持把 portable manifest 作为最后对象上传到同一 parent-id。
+- [x] 已新增 `inspect-manifest` / `verify-local`，可在恢复/继续迁移前检查本地变化、远端映射与完成度。
+- [x] 明文 migration 保持 `encryption: none` 且不制造整文件临时密文；真正加密能力已另行落实为 repository v1 的 CDC/chunk/pack 流式架构。
+- [x] manifest、目录枚举、断点恢复、冲突/源文件变化、0 字节等边界已有单元测试并持续纳入完整测试套件。
 
 
 ## 项目目标
@@ -112,7 +112,7 @@
 - [x] 运行语法与单元测试；当前 24 tests 全绿。
 - [x] 真实运行 Node CLI 8 MiB 本地文件，Direct OSS + PikPak check-in 完整成功并清理测试文件。
 
-## 阶段 2：正式 CLI MVP（进行中）
+## 阶段 2：正式 CLI MVP（核心已完成，保留超长单对象增强项）
 
 - [x] CLI 接受单个本地文件；目录递归尚未实现。
 - [x] 使用受控浏览器登录态获取控制面认证，STS 只保留在 Node 内存并默认脱敏。
@@ -121,9 +121,9 @@
 - [x] Node `ali-oss` multipart 上传真实本地文件路径。
 - [x] 轮询 PikPak task 至 complete / error / timeout，默认等待 180 秒；timeout 不误删任务。
 - [x] CLI 输出不含 secret 的本地 path、size、SHA-1、远端 file id、task id、endpoint、完成状态。
-- [ ] 把结果写成持久 manifest 文件，并设计可恢复状态目录。
-- [ ] 支持目录递归、远端目录创建与冲突策略。
-- [ ] 支持持久 checkpoint / pause / resume。
+- [x] 明文 migration 已有持久 manifest/可恢复状态；加密 repository v1 进一步用 immutable snapshot + pack TOC 作为恢复真相。
+- [x] 已支持目录递归；repository v1 还支持固定 PikPak Vault 远端目录创建、同名冲突拒绝与 immutable 对象冲突检测。
+- [x] Aliyun multipart checkpoint 与 migration resume 已持久化；显式“pause”命令不是 v1 必需项，进程中断后重跑由 manifest/checkpoint 恢复。
 - [ ] 研究并验证 STS 换证：当前 STS 约 12h；相同 fileId 立即 recreate 不刷新 expiration；需验证临近/超过 expiry 后行为或寻找专门刷新 API。
 - [ ] 在 STS 换证完成前，对预计传输时长可能超过 token TTL 的单文件给出安全预警/拒绝策略。
 
@@ -137,11 +137,11 @@
 
 ## 阶段 4：长期兼容与回退
 
-- [ ] provider 不再是 Aliyun 时自动拒绝 endpoint 改写并回退安全路径。
-- [ ] bucket region 无法确定时禁止猜测。
-- [ ] 标准 OSS endpoint 失败时回退 server endpoint，但明确提示可能消耗代理流量。
-- [ ] 建立小文件 smoke test，检测 PikPak 前端/API 变更。
-- [ ] 记录 WebDAV、CLI、Cloud Download、R2/B2 中转作为备选路径。
+- [x] provider 不再是 Aliyun 时自动拒绝 endpoint 改写；`prefer-direct` 可按显式策略回退 server，`direct-only` 安全失败。
+- [x] bucket region 无法从可信 endpoint/DoH 共识确定时禁止猜测。
+- [x] `prefer-direct` 无法建立可信 direct endpoint 时可回退 server，并明确该路径可能重新消耗代理流量；默认仍是 `direct-only`。
+- [x] 已建立离线协议回归 + 多次真实小文件 smoke，用于检测 PikPak Web/API 变化；read-only runtime 还具备 reload 后恢复能力。
+- [x] WebDAV、官方 CLI、Cloud Download、对象存储中转等备选路径及取舍已记录；当前默认只用已验证的 Route A / Named Tunnel Route B。
 
 ## 阶段 5：Windows WebDAV 挂载维护
 
@@ -173,7 +173,7 @@
 
 第二版（PoC 成功后）：
 
-- [ ] 支持目录先打包再 Cloud Download；先选择一种可流式、可恢复的归档格式，避免为了打包复制出第二份超大临时文件。
+- [x] “把整个目录先打成单个 Cloud Download 大包”方案已被 repository v1 取代：目录直接 CDC 流式切 chunk、压缩+AEAD 写 immutable pack，不生成第二份整目录巨型临时归档，也不把恢复绑死在 Route B。
 - [x] 已支持已有命名 Cloudflare Tunnel + 自有域名，并保持 connector/origin 仅任务期间开放，Tunnel/DNS 映射长期保存。
 - [x] 原“Cloud Download 专用 manifest/SQLite”需求由 repository v1 取代：恢复真相在加密 snapshot + pack TOC，本地索引只是可重建缓存，不再把 SQLite 作为恢复单点。
 - [x] 客户端加密层已实现为 CDC + chunk/pack + AEAD，不把整个目录做成单一巨型密文。

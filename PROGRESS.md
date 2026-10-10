@@ -23,6 +23,7 @@
 - 第一次真实 cloud repository E2E 已证明 `repo.json` 与 pack 可经 Route A 上传并 check-in；第三个 snapshot 等待 check-in 时，受管 PikPak SPA 恰逢 runtime 丢失，`getTaskStatus` 报 `webpack chunk global not found`。probe Vault `PikPak-Direct Vault E2E Probe 316ed2aacdfb` 已精确移入回收站。已新增“只读调用 runtime 自动恢复”：task poll/list/file detail 遇到 webpack runtime 短暂缺失时先被动等待，必要时重新导航受管 PikPak tab 后只重试一次；所有有副作用的 create/upload/trash 调用仍绝不自动重放。
 - 第二次真实 cloud repository E2E 已完整通过：随机 probe Vault 中 `repo.json + 1 pack + 1 snapshot` 全部经 Route A 上传并 COMPLETE；随后删除本地 repo，从 PikPak 下载 3 个对象，仅凭内存 recovery key 完成 full verify、fresh restore 与文件 SHA-256 对比，输出 `CLOUD_REPO_E2E_OK packs=1 chunks=2 snapshots=1`；probe Vault 已移入回收站。
 - Route B 最终架构收尾：已删除 `src/cloudflare-quick-tunnel.mjs` 与对应单测。Quick Tunnel 只作为 2026-09-19 历史实验事实保留在 experiment 文档；正式 `cloud-pull` 唯一路径是现有 `PikPak-RouteB` Named Tunnel + 固定 DNS + 任务期 connector/origin，不存在动态 Quick Tunnel fallback。
+- 最终计划账已回填：2026-09-27 的明文 migration manifest/目录枚举/resume/checkpoint/portable manifest/inspect/verify 等历史实现全部标为已完成；阶段 4 provider/region 安全失败与显式 fallback 也已标清。仍保持未完成的条目只剩真正的后续工作，例如 P30 既有备份继续迁移、STS 超长单对象换证/预警、D 盘观察区等，不再把 repository v1 已完成能力重复列成欠债。
 - 新仓库测试首轮暴露的唯一前置失败是测试 pack 设为 128/256 KiB，而初始化器把 packTargetBytes 最低限制为 1 MiB；该限制与格式/密码学无关，已放宽为 64 KiB，生产默认仍保持 128 MiB，便于快速覆盖多 pack 与损坏隔离测试。
 - 仓库 round-trip 已实际通过：第二个增量 snapshot 能在没有本地 index/cache、没有 password 的情况下，仅凭 recovery key 扫描 pack TOC + snapshot 完整恢复，逐文件 SHA-256 一致。剩余“单 pack 损坏隔离”测试失败定位为夹具数据具有 256-byte 周期、被 Brotli 极度压缩而没形成多 pack；已改为固定 seed xorshift32 不可压缩夹具，确保测试真的覆盖多个 pack。
 
