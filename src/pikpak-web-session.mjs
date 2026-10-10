@@ -18,7 +18,10 @@
 // - 本模块绝不把完整 PikPak API response 写盘。
 
 import { inspect } from 'node:util';
-import { acquirePikPakBrowserLease } from './pikpak-browser-lifecycle.mjs';
+import {
+  PIKPAK_DRIVE_URL,
+  acquirePikPakBrowserLease,
+} from './pikpak-browser-lifecycle.mjs';
 
 const DEFAULT_CDP_URL = 'http://127.0.0.1:9222';
 
@@ -314,6 +317,16 @@ function unwrapEvaluation(evaluation) {
   return evaluation.result.value;
 }
 
+/**
+ * PikPak SPA 在自动 reload / service-worker 切换的极短窗口里，window 上可能暂时没有
+ * webpackChunk*。这种错误对 GET/list/task-poll 等只读调用可以安全等待 runtime 恢复后重试；
+ * 对 create/upload/trash 等有副作用调用则绝不能自动重放，否则可能制造重复对象/任务。
+ */
+export function isRecoverableWebpackRuntimeError(error) {
+  const message = String(error?.message || error || '');
+  return /webpack chunk global not found|webpack require capture failed|expected modules are missing/i.test(message);
+}
+
 export class PikPakWebSession {
   constructor(cdp, target, browserLease = null) {
     this.cdp = cdp;
@@ -334,6 +347,82 @@ export class PikPakWebSession {
     } catch (error) {
       await browserLease.release();
       throw error;
+    }
+  }
+
+  /**
+   * 等待当前受管 tab 的 PikPak SPA runtime 回来；必要时最后才重新导航到 Drive。
+   *
+   * 第一阶段只等待，覆盖“刚好撞上页面 reload”的常见情况；5 秒仍没有 runtime 时才导航，
+   * 避免无意义刷新一个其实正在正常恢复的页面。window.name marker 会跨导航保留。
+   */
+  async recoverReadOnlyRuntime({ passiveWaitMs = 5_000, navigateWaitMs = 20_000 } = {}) {
+    const probe = async () => {
+      const evaluation = await this.cdp.call('Runtime.evaluate', {
+        expression: `(()=>({
+          href:location.href,
+          ready:document.readyState,
+          hasWebpack:Object.keys(window).some(k=>k.startsWith('webpackChunk')&&window[k]&&typeof window[k].push==='function')
+        }))()`,
+        returnByValue: true,
+      });
+      return unwrapEvaluation(evaluation);
+    };
+
+    const waitUntilReady = async (timeoutMs) => {
+      const started = Date.now();
+      let last = null;
+      while (Date.now() - started <= timeoutMs) {
+        try {
+          last = await probe();
+          if (last?.hasWebpack && String(last.href || '').includes('mypikpak.com/drive')) return last;
+          if (String(last?.href || '').includes('/login')) {
+            const error = new Error('PikPak 受管页面在任务执行中掉登录，无法自动恢复只读控制面。');
+            error.code = 'LOGIN_REQUIRED';
+            throw error;
+          }
+        } catch (error) {
+          if (error?.code === 'LOGIN_REQUIRED') throw error;
+          // reload 的瞬间 Runtime.evaluate 自己也可能失败；继续等待。
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      return null;
+    };
+
+    const passive = await waitUntilReady(passiveWaitMs);
+    if (passive) return passive;
+
+    await this.cdp.call('Page.enable');
+    await this.cdp.call('Page.navigate', { url: PIKPAK_DRIVE_URL });
+    const navigated = await waitUntilReady(navigateWaitMs);
+    if (!navigated) {
+      const error = new Error('PikPak 页面 runtime 在 reload/重新导航后仍未恢复。');
+      error.code = 'WEB_RUNTIME_UNAVAILABLE';
+      throw error;
+    }
+    return navigated;
+  }
+
+  /**
+   * 仅供“确认无副作用”的页面查询使用。runtime 短暂丢失时最多重放一次相同表达式。
+   */
+  async evaluateReadOnly(expression) {
+    const run = async () => {
+      const evaluation = await this.cdp.call('Runtime.evaluate', {
+        expression,
+        awaitPromise: true,
+        returnByValue: true,
+      });
+      return unwrapEvaluation(evaluation);
+    };
+
+    try {
+      return await run();
+    } catch (error) {
+      if (!isRecoverableWebpackRuntimeError(error)) throw error;
+      await this.recoverReadOnlyRuntime();
+      return run();
     }
   }
 
@@ -568,12 +657,7 @@ export class PikPakWebSession {
         }))
       };
     })()`;
-    const evaluation = await this.cdp.call('Runtime.evaluate', {
-      expression,
-      awaitPromise: true,
-      returnByValue: true,
-    });
-    return unwrapEvaluation(evaluation);
+    return this.evaluateReadOnly(expression);
   }
 
   /**
@@ -599,12 +683,7 @@ export class PikPakWebSession {
         expire:link?.expire||null
       };
     })()`;
-    const evaluation = await this.cdp.call('Runtime.evaluate', {
-      expression,
-      awaitPromise: true,
-      returnByValue: true,
-    });
-    const result = unwrapEvaluation(evaluation);
+    const result = await this.evaluateReadOnly(expression);
     if (!/^https:\/\//i.test(String(result?.url || ''))) {
       throw new Error(`PikPak file ${fileId} 没有可用 HTTPS 下载链接。`);
     }
@@ -634,13 +713,7 @@ export class PikPakWebSession {
       };
     })()`;
 
-    const evaluation = await this.cdp.call('Runtime.evaluate', {
-      expression,
-      awaitPromise: true,
-      returnByValue: true,
-    });
-
-    return unwrapEvaluation(evaluation);
+    return this.evaluateReadOnly(expression);
   }
 
   /**

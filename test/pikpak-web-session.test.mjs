@@ -12,6 +12,7 @@ import {
   PikPakWebSession,
   buildCreateFolderBody,
   buildCloudDownloadBody,
+  isRecoverableWebpackRuntimeError,
   webpackBootstrapExpression,
 } from '../src/pikpak-web-session.mjs';
 
@@ -135,6 +136,13 @@ test('普通文件夹创建请求体固定为 drive#folder + NORMAL', () => {
     folder_type: 'NORMAL',
   });
   assert.throws(() => buildCreateFolderBody({ name: '' }), /不能为空/);
+});
+
+test('只把 webpack runtime 短暂丢失识别为可安全重试的只读控制面错误', () => {
+  assert.equal(isRecoverableWebpackRuntimeError(new Error('PikPak webpack chunk global not found')), true);
+  assert.equal(isRecoverableWebpackRuntimeError(new Error('webpack require capture failed or expected modules are missing')), true);
+  assert.equal(isRecoverableWebpackRuntimeError(new Error('PikPak 创建上传任务失败: quota exceeded')), false);
+  assert.equal(isRecoverableWebpackRuntimeError(new Error('HTTP 401')), false);
 });
 
 test('当前 Web bundle 的回收站与永久删除导出名必须保持区分', () => {
