@@ -27,7 +27,8 @@
 - [x] 定位当前 Web 控制面：NewFiles 组件调用 webpack module 18839 的 x3，body 为 upload_type=UPLOAD_TYPE_URL + url.url；已据此实现 PikPakWebSession.createCloudDownload()。
 - [x] 复核 2026-09-19 官方 CLI 静态审计：v0.5.1 checksum 与官方一致、Defender 未报已知威胁，但 Windows EXE 未签名且闭源，无法证明零遥测；因此继续维持“不作为默认依赖”的决策。
 - [ ] 若后续确实需要 PikPak 官方 CLI，先在隔离环境审计遥测、自动更新、凭据、网络目的地；能不用则不用。
-- [ ] cloud-pull 改为“既有固定 Cloudflare Tunnel / DNS 公网入口 + 临时本地 origin”：Tunnel/DNS 映射长期保存，不为每次任务申请 Quick Tunnel；CLI 只负责短时启动/停止本地 origin，并在提交前检查固定公网 URL 已能命中该 origin。
+- [x] cloud-pull 改为“既有固定 Cloudflare Tunnel / DNS 公网入口 + 临时本地 origin”：已确认 `PikPak-RouteB` 远端配置固定为 `pikpak-pull.zjhstudio.com -> http://127.0.0.1:18765`；CLI 不再申请 Quick Tunnel，只启动任务期 origin + named connector，并用 HEAD 验证固定公网入口。
+- [x] Route B 新增正文硬预算，默认最多向公网发送源文件大小的 4 倍；超预算 GET 在发送正文前 429，防止先前 5.58x 乃至无限重试继续烧上行。
 - [x] Quick Tunnel 版仅保留为历史实验代码/证据：已证明 PikPak 能主动拉取，但不再作为正式架构或默认 fallback。
 - [ ] 记录 Range/GET 次数和累计发送字节，避免大文件被多次完整回拉导致上行放大。
 - [x] 已记录 GET/HEAD/Range/累计字节，并在真实 1 MiB smoke 观测到 5.58x 读取放大；新增安全 requestLog 精确记录各请求的 Range/计划字节。下一步需基于请求序列定位放大原因后再决定是否允许大文件 Route B。

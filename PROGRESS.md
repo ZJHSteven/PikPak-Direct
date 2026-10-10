@@ -4,6 +4,8 @@
 
 - 2026-10-11 用户进一步明确真实架构：9222 是长期共享的“Chrome CDP 日常用”，不是 PikPak-Direct 私有进程；Route A 现在已删除 Chrome spawn / Browser.close 设计，项目只拥有带 marker 的 PikPak tab。当前真实 9222 主进程与桌面/开始菜单快捷方式参数完全一致：同一 Chrome 可执行文件、`D:\AppData\Chrome\Chrome-CDP\User Data`、Default profile、9222、127.0.0.1、no-first-run/no-default-browser-check。
 - Route B 架构也已纠偏：正式方案不再动态创建 Quick Tunnel。用户已有长期保存的 Cloudflare Tunnel + DNS routing，CLI 只需要让对应 origin 在任务期间上线/下线；Tunnel/DNS 映射本身保持不变。Quick Tunnel 代码降级为历史 PoC/诊断证据，不再作为大文件正式 fallback。
+- Cloudflare 账号已只读核实：专用 Remote-managed Tunnel 名为 `PikPak-RouteB`，固定 ingress 为 `pikpak-pull.zjhstudio.com -> http://127.0.0.1:18765`，当前 connector 可按任务临时上线；DevSpace Secrets 已存在 `pikpak_routeb_tunnel_token`。正式实现用 child env `TUNNEL_TOKEN` 注入，不把 token 放进 cloudflared argv、源码或日志。
+- cloud-pull 已切换为 Named Tunnel 模型：固定 18765 loopback origin + 临时 connector + 固定公网 hostname HEAD gate；不创建/删除 Tunnel，不改 DNS。并增加默认 4x 正文发送硬预算，超预算 GET 在发正文前拒绝，以限制此前实测 5.58x 的回拉放大。
 - 本轮终点扩展为整个 PikPak CLI 收口：完成上述两项后继续实现客户端加密仓库、CDC/pack、snapshot/index 与 fresh-machine restore，不在 Route A/B 停止。
 
 - Live Ops 已新增两个独立子项：Route A“Chrome 生命周期与自动登录”、Route B“Cloud Download 无网页 fallback”，均置为 doing。

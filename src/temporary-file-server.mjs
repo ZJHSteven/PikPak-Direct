@@ -80,6 +80,7 @@ export function parseSingleRange(rangeHeader, fileSize) {
  *   host?: string,
  *   port?: number,
  *   tokenBytes?: number,
+ *   maxBytesServed?: number,
  * }} options
  * @returns {Promise<{
  *   host: string,
@@ -94,6 +95,7 @@ export function parseSingleRange(rangeHeader, fileSize) {
  *     headRequests: number,
  *     rangeRequests: number,
  *     rejectedRequests: number,
+ *     budgetRejectedRequests: number,
  *     bytesServed: number,
  *     requestLog: Array<{
  *       method: string,
@@ -110,6 +112,7 @@ export async function createTemporaryFileServer({
   host = '127.0.0.1',
   port = 0,
   tokenBytes = 32,
+  maxBytesServed = Number.POSITIVE_INFINITY,
 }) {
   if (!filePath) throw new Error('filePath 不能为空。');
   if (host !== '127.0.0.1' && host !== '::1') {
@@ -120,6 +123,9 @@ export async function createTemporaryFileServer({
   }
   if (!Number.isInteger(tokenBytes) || tokenBytes < 16 || tokenBytes > 64) {
     throw new Error('tokenBytes 必须是 16~64；默认 32（256 bit）。');
+  }
+  if (!(maxBytesServed === Number.POSITIVE_INFINITY || (Number.isSafeInteger(maxBytesServed) && maxBytesServed >= 0))) {
+    throw new Error('maxBytesServed 必须是非负安全整数或 Infinity。');
   }
 
   const absolutePath = resolve(filePath);
@@ -139,6 +145,7 @@ export async function createTemporaryFileServer({
     headRequests: 0,
     rangeRequests: 0,
     rejectedRequests: 0,
+    budgetRejectedRequests: 0,
     bytesServed: 0,
     // 只记录协议形态，不记录随机 URL/token、来源 IP、Cookie 或 User-Agent。
     // 上限 64 条，足够诊断重复 Range/整文件回拉，又不会让长任务无限增长内存。
@@ -147,6 +154,60 @@ export async function createTemporaryFileServer({
 
   const recordRequest = (entry) => {
     if (stats.requestLog.length < 64) stats.requestLog.push(entry);
+  };
+
+  // 已接受但还没真正从磁盘发完的 GET 会提前占用预算，避免并发请求同时通过检查后
+  // 共同把总上行量冲破限制。流结束/中断时释放“计划字节”，实际发送量仍永久计入 stats。
+  let reservedBytes = 0;
+  const reserveBodyBudget = (plannedBytes) => {
+    if (maxBytesServed === Number.POSITIVE_INFINITY) return true;
+    if (stats.bytesServed + reservedBytes + plannedBytes > maxBytesServed) return false;
+    reservedBytes += plannedBytes;
+    return true;
+  };
+  const releaseBodyBudget = (plannedBytes) => {
+    reservedBytes = Math.max(0, reservedBytes - plannedBytes);
+  };
+
+  /** 超出 Route B 正文预算时只拒绝本次 GET，不发送任何文件字节。 */
+  const rejectForBudget = (request, response, method, range) => {
+    stats.rejectedRequests += 1;
+    stats.budgetRejectedRequests += 1;
+    recordRequest({ method, status: 429, range, plannedBytes: 0 });
+    response.writeHead(429, {
+      'Cache-Control': 'no-store',
+      'Content-Length': '0',
+      'Retry-After': '60',
+    });
+    response.end();
+  };
+
+  /** 建立文件流，并保证无论正常结束、客户端断开还是读盘报错都只释放一次预算。 */
+  const pipeFileRange = ({ response, start, end, plannedBytes }) => {
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      releaseBodyBudget(plannedBytes);
+    };
+
+    const stream = start === undefined
+      ? createReadStream(absolutePath)
+      : createReadStream(absolutePath, { start, end });
+
+    stream.on('data', (chunk) => {
+      stats.bytesServed += chunk.length;
+    });
+    stream.once('end', release);
+    stream.once('close', release);
+    stream.once('error', () => {
+      release();
+      response.destroy();
+    });
+    response.once('close', () => {
+      if (!stream.destroyed) stream.destroy();
+    });
+    stream.pipe(response);
   };
 
   const server = createServer((request, response) => {
@@ -211,6 +272,12 @@ export async function createTemporaryFileServer({
       if (method === 'GET') stats.getRequests += 1;
       if (method === 'HEAD') stats.headRequests += 1;
       const length = range.end - range.start + 1;
+
+      if (method === 'GET' && !reserveBodyBudget(length)) {
+        rejectForBudget(request, response, method, `bytes=${range.start}-${range.end}`);
+        return;
+      }
+
       recordRequest({
         method,
         status: 206,
@@ -229,24 +296,25 @@ export async function createTemporaryFileServer({
       }
 
       // 只把请求的区间从磁盘流式读出，不把整个大文件塞进内存。
-      const stream = createReadStream(absolutePath, {
+      pipeFileRange({
+        response,
         start: range.start,
         end: range.end,
+        plannedBytes: length,
       });
-      stream.on('data', (chunk) => {
-        stats.bytesServed += chunk.length;
-      });
-      stream.on('error', () => {
-        // Header 已经发送后不能安全改成 500；直接销毁连接，让远端按普通网络失败处理。
-        response.destroy();
-      });
-      stream.pipe(response);
       return;
     }
 
     // 没有 Range 的正常请求到这里才算“已接受”，避免把 416 请求误计为成功 GET/HEAD。
     if (method === 'GET') stats.getRequests += 1;
     if (method === 'HEAD') stats.headRequests += 1;
+
+    if (method === 'GET' && !reserveBodyBudget(fileStat.size)) {
+      // 上面已经把 GET 计入 getRequests；预算拒绝属于“远端真实尝试过一次 GET”，保留该计数。
+      rejectForBudget(request, response, method, null);
+      return;
+    }
+
     recordRequest({
       method,
       status: 200,
@@ -264,14 +332,10 @@ export async function createTemporaryFileServer({
       return;
     }
 
-    const stream = createReadStream(absolutePath);
-    stream.on('data', (chunk) => {
-      stats.bytesServed += chunk.length;
+    pipeFileRange({
+      response,
+      plannedBytes: fileStat.size,
     });
-    stream.on('error', () => {
-      response.destroy();
-    });
-    stream.pipe(response);
   });
 
   await new Promise((resolveListen, rejectListen) => {

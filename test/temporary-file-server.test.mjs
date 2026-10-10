@@ -135,3 +135,30 @@ test('临时服务器拒绝绑定非 loopback 地址', async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test('正文发送预算会在重复 GET 前硬截断，避免 Route B 无限回拉放大', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'pikpak-direct-http-budget-test-'));
+  const filePath = join(directory, 'budget.bin');
+  const content = Buffer.from('0123456789', 'utf8');
+  await writeFile(filePath, content);
+
+  // 只允许发送 1 份完整正文；第二次完整 GET 必须在读盘/发正文前被 429 拒绝。
+  const source = await createTemporaryFileServer({
+    filePath,
+    maxBytesServed: content.length,
+  });
+  t.after(async () => {
+    await source.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  const first = await fetch(source.localUrl);
+  assert.equal(first.status, 200);
+  assert.deepEqual(Buffer.from(await first.arrayBuffer()), content);
+
+  const second = await fetch(source.localUrl);
+  assert.equal(second.status, 429);
+  assert.equal((await second.arrayBuffer()).byteLength, 0);
+  assert.equal(source.stats.bytesServed, content.length);
+  assert.equal(source.stats.budgetRejectedRequests, 1);
+});

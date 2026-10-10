@@ -35,9 +35,12 @@ import { PikPakWebSession } from '../src/pikpak-web-session.mjs';
 import { discoverAliyunRegion } from '../src/region-discovery.mjs';
 import { createTemporaryFileServer } from '../src/temporary-file-server.mjs';
 import {
-  createQuickTunnel,
-  waitForPublicFileHead,
-} from '../src/cloudflare-quick-tunnel.mjs';
+  DEFAULT_ROUTE_B_ORIGIN_PORT,
+  DEFAULT_ROUTE_B_PUBLIC_BASE_URL,
+  createNamedTunnelConnector,
+  validateNamedTunnelRoute,
+  waitForNamedTunnelFileHead,
+} from '../src/cloudflare-named-tunnel.mjs';
 
 const DEFAULT_CDP_URL = 'http://127.0.0.1:9222';
 
@@ -68,6 +71,9 @@ function printHelp() {
   --parallel <n>                  multipart 并发，默认 4，范围 1~32。
   --checkin-timeout-sec <n>       OSS 上传后等待 PikPak 检入，默认 180 秒。
   --cdp <url>                     Chrome DevTools 地址，默认 ${DEFAULT_CDP_URL}。
+  --routeb-public-base <url>      Route B 固定 HTTPS origin，默认 ${DEFAULT_ROUTE_B_PUBLIC_BASE_URL}。
+  --routeb-origin-port <n>        Route B 本地 origin 端口，默认 ${DEFAULT_ROUTE_B_ORIGIN_PORT}。
+  --routeb-max-read-multiplier <n> Route B 最多向公网发送文件正文的倍数，默认 4。
   --trash-after-success           成功并检入后立刻移入回收站，仅建议 smoke test。
   -h, --help                      显示帮助。
 
@@ -111,6 +117,9 @@ function parseArgs(argv) {
     dryRun: false,
     uploadPortableManifest: true,
     fullHash: false,
+    routeBPublicBaseUrl: DEFAULT_ROUTE_B_PUBLIC_BASE_URL,
+    routeBOriginPort: DEFAULT_ROUTE_B_ORIGIN_PORT,
+    routeBMaxReadMultiplier: 4,
   };
 
   for (let index = 2; index < argv.length; index += 1) {
@@ -152,6 +161,15 @@ function parseArgs(argv) {
       args.uploadPortableManifest = false;
     } else if (flag === '--full-hash') {
       args.fullHash = true;
+    } else if (flag === '--routeb-public-base') {
+      args.routeBPublicBaseUrl = value;
+      index += 1;
+    } else if (flag === '--routeb-origin-port') {
+      args.routeBOriginPort = Number(value);
+      index += 1;
+    } else if (flag === '--routeb-max-read-multiplier') {
+      args.routeBMaxReadMultiplier = Number(value);
+      index += 1;
     } else {
       throw new Error(`未知参数: ${flag}`);
     }
@@ -177,6 +195,18 @@ function validateArgs(args) {
 
   if (!Number.isFinite(args.checkInTimeoutSec) || args.checkInTimeoutSec < 1 || args.checkInTimeoutSec > 3600) {
     throw new Error('--checkin-timeout-sec 必须是 1~3600 秒。');
+  }
+
+  if (args.command === 'cloud-pull') {
+    validateNamedTunnelRoute({
+      publicBaseUrl: args.routeBPublicBaseUrl,
+      originPort: args.routeBOriginPort,
+    });
+    if (!Number.isFinite(args.routeBMaxReadMultiplier)
+      || args.routeBMaxReadMultiplier < 1
+      || args.routeBMaxReadMultiplier > 20) {
+      throw new Error('--routeb-max-read-multiplier 必须是 1~20 的数字。');
+    }
   }
 }
 
@@ -372,11 +402,11 @@ async function uploadCommand(args) {
 }
 
 /**
- * Route B：让 PikPak Cloud Download 经一次性 Quick Tunnel 主动回拉本地文件。
+ * Route B：让 PikPak Cloud Download 经固定 Named Tunnel 主动回拉本地文件。
  *
  * 生命周期故意全部收在一个 try/finally：
  * 1. loopback 源站；
- * 2. Quick Tunnel；
+ * 2. 现有 Cloudflare Named Tunnel 的临时 connector；
  * 3. Web 控制面创建 URL task；
  * 4. 等待 COMPLETE；
  * 5. 无论任何一步成功/失败，都关闭 Web lease、Tunnel 与 HTTP server。
@@ -394,21 +424,26 @@ async function cloudPullCommand(args) {
 
   try {
     console.log('[1/4] 启动 loopback 单文件 HTTP 源站...');
-    source = await createTemporaryFileServer({ filePath });
+    const maxBytesServed = Math.ceil(fileStat.size * args.routeBMaxReadMultiplier);
+    source = await createTemporaryFileServer({
+      filePath,
+      port: args.routeBOriginPort,
+      maxBytesServed,
+    });
     console.log(`      ${source.host}:${source.port} / ${formatBytes(source.fileSize)}`);
+    console.log(`      正文发送硬上限: ${formatBytes(maxBytesServed)} (${args.routeBMaxReadMultiplier}x)`);
 
-    console.log('[2/4] 启动一次性 Cloudflare Quick Tunnel（--no-autoupdate）...');
-    // Tunnel 只需要 origin 的 host:port；随机 token 路径稍后拼到公网 base URL。
-    const originBase = `http://${source.host}:${source.port}`;
-    tunnel = await createQuickTunnel({ localUrl: originBase });
-    const publicUrl = `${tunnel.publicBaseUrl}${source.publicPath}`;
+    console.log('[2/4] 启动现有 Cloudflare Named Tunnel connector（DNS/Tunnel 配置保持不变）...');
+    tunnel = await createNamedTunnelConnector();
+    const publicBaseUrl = new URL(args.routeBPublicBaseUrl).origin;
+    const publicUrl = `${publicBaseUrl}${source.publicPath}`;
 
     // 先做一次 HEAD：确认公网入口真的能到达本机源站，又不会发送文件正文。
-    await waitForPublicFileHead({
+    await waitForNamedTunnelFileHead({
       url: publicUrl,
       expectedSize: source.fileSize,
     });
-    console.log('      公网 HEAD 预检通过；随机 URL 不写入日志。');
+    console.log('      固定公网入口 HEAD 预检通过；一次性随机路径不写入日志。');
 
     console.log('[3/4] 通过已登录 PikPak Web 创建 UPLOAD_TYPE_URL 任务...');
     web = await PikPakWebSession.connect({ cdpUrl: args.cdpUrl });
@@ -434,6 +469,7 @@ async function cloudPullCommand(args) {
       fileId: resolvedFileId,
       checkIn,
       sourceStats: { ...source.stats },
+      routeBMaxReadMultiplier: args.routeBMaxReadMultiplier,
     };
 
     if (!checkIn.allDone) {
@@ -457,7 +493,7 @@ async function cloudPullCommand(args) {
     console.log('\nCloud Download 结果（公网随机 URL 已省略）：');
     console.log(JSON.stringify(result, null, 2));
   } catch (error) {
-    // Route B 的 source URL 随 CLI 退出而失效，所以“未完成 task + 已关闭 Tunnel”本身
+    // Route B 的随机 source path 随 CLI 退出而失效，所以“未完成 task + connector/origin 已关闭”本身
     // 就是无法恢复的尾巴。与 Route A/OSS 不同，这里默认先删除本工具自己刚创建的 task，
     // 并要求 PikPak 一并删除关联的未完成文件，再释放公网入口。
     if (web && cloudTask?.taskId && !taskCompleted) {
@@ -470,7 +506,8 @@ async function cloudPullCommand(args) {
     }
     throw error;
   } finally {
-    // 顺序反向释放：先结束控制面，再关公网入口，最后停本地源站。
+    // 顺序反向释放：先结束控制面，再停 connector，最后停本地源站。
+    // Cloudflare 侧的 Named Tunnel 与 DNS 映射不会被本 CLI 删除或修改。
     if (web) await web.close().catch(() => {});
     if (tunnel) await tunnel.close().catch(() => {});
     if (source) await source.close().catch(() => {});
