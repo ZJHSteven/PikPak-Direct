@@ -119,3 +119,12 @@ test('Cloud Download 请求体使用 UPLOAD_TYPE_URL 且根目录使用 DOWNLOAD
   );
 });
 
+test('当前 Web bundle 的回收站与永久删除导出名必须保持区分', () => {
+  // 这是对当前 2026-10-11 bundle 逆向得到的契约做一个显式回归锚点：
+  // Cw = files:batchTrash；VK = files:batchDelete。
+  // 真正运行时仍由 trashFile() 检查 Cw 是否存在；此测试避免后续维护者误把旧 VK 写回来。
+  const source = PikPakWebSession.prototype.trashFile.toString();
+  assert.match(source, /fileApi\.Cw/);
+  assert.doesNotMatch(source, /fileApi\.VK/);
+});
+

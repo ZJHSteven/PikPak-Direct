@@ -572,7 +572,14 @@ export class PikPakWebSession {
       ${webpackBootstrapExpression()}
       const fileApi=__ppReq(${WEBPACK_MODULES.fileAndTaskApi});
       try{
-        await fileApi.VK([${JSON.stringify(fileId)}]);
+        // 2026-10-11 当前 bundle 映射：
+        //   Cw -> /files:batchTrash   （移入回收站）
+        //   VK -> /files:batchDelete  （永久删除）
+        // 这里必须使用 Cw；--trash-after-success 的语义绝不能悄悄退化成永久删除。
+        if(typeof fileApi?.Cw!=='function'){
+          return {ok:false,error:'fileApi.Cw missing'};
+        }
+        await fileApi.Cw([${JSON.stringify(fileId)}]);
         return {ok:true};
       }catch(error){
         return {ok:false,error:String(error?.message||error)};
