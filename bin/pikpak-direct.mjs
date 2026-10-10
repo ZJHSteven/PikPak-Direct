@@ -34,7 +34,10 @@ import { runMigration, verifyManifestLocal } from '../src/migration-runner.mjs';
 import { PikPakWebSession } from '../src/pikpak-web-session.mjs';
 import { discoverAliyunRegion } from '../src/region-discovery.mjs';
 import { createTemporaryFileServer } from '../src/temporary-file-server.mjs';
-import { createQuickTunnel } from '../src/cloudflare-quick-tunnel.mjs';
+import {
+  createQuickTunnel,
+  waitForPublicFileHead,
+} from '../src/cloudflare-quick-tunnel.mjs';
 
 const DEFAULT_CDP_URL = 'http://127.0.0.1:9222';
 
@@ -400,13 +403,10 @@ async function cloudPullCommand(args) {
     const publicUrl = `${tunnel.publicBaseUrl}${source.publicPath}`;
 
     // 先做一次 HEAD：确认公网入口真的能到达本机源站，又不会发送文件正文。
-    const head = await fetch(publicUrl, {
-      method: 'HEAD',
-      signal: AbortSignal.timeout(15_000),
+    await waitForPublicFileHead({
+      url: publicUrl,
+      expectedSize: source.fileSize,
     });
-    if (!head.ok || Number(head.headers.get('content-length')) !== source.fileSize) {
-      throw new Error(`Quick Tunnel HEAD 预检失败: HTTP ${head.status}`);
-    }
     console.log('      公网 HEAD 预检通过；随机 URL 不写入日志。');
 
     console.log('[3/4] 通过已登录 PikPak Web 创建 UPLOAD_TYPE_URL 任务...');

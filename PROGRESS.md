@@ -17,6 +17,7 @@
 - Route B 当前 Web 协议已经定位：NewFiles 组件构造 kind=drive#file、upload_type=UPLOAD_TYPE_URL、url.url=<公网链接>，通过 webpack module 18839.x3 创建任务；根目录时 folder_type=DOWNLOAD。已新增 createCloudDownload()，不依赖官方 PikPak CLI。
 - 新增 cloudflared Quick Tunnel 生命周期封装：只接受 loopback HTTP、显式 --no-autoupdate、只保留短日志尾部、不输出随机公网 URL、退出时关闭进程。
 - 新增 cloud-pull CLI 第一版：单文件 HTTP 源站、Quick Tunnel、HEAD 预检、Cloud Download task、任务完成轮询与 source GET/HEAD/Range/bytesServed 统计全部进入同一 try/finally 生命周期。待自动测试与真实 1 MiB smoke。
+- 第一次真实 1 MiB cloud-pull smoke 在 PikPak task 创建前被公网 HEAD gate 拦下：cloudflared 已分配 URL，但立即 fetch 仍报 fetch failed，属于 Quick Tunnel URL 分配与 Edge/connector 真正 ready 之间的竞态。finally 已实测把 cloudflared、HTTP 监听和受管 PikPak tab 全部清零。现已把 HEAD gate 改为 20 秒窗口内重试，仍不发送文件正文。
 
 ## 2026-10-10 手机冷备实战：P30 Route A 已重新验证，发现并修复空文件边界
 

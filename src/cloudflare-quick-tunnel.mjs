@@ -29,6 +29,39 @@ export function assertSafeQuickTunnelOrigin(localUrl) {
 }
 
 /**
+ * 等待 Quick Tunnel 真正从公网可用。
+ *
+ * cloudflared 打印随机 URL 只代表“URL 已分配”，Edge/connector 可能还需要短暂收敛。
+ * 因此 Route B 不能在拿到字符串的同一毫秒就把 URL 交给 PikPak；这里用 HEAD 做 ready gate，
+ * HEAD 不发送文件正文，不会污染 bytesServed。
+ */
+export async function waitForPublicFileHead({
+  url,
+  expectedSize,
+  timeoutMs = 20_000,
+  intervalMs = 500,
+  fetchImpl = fetch,
+}) {
+  const started = Date.now();
+  let lastError = null;
+  while (Date.now() - started <= timeoutMs) {
+    try {
+      const response = await fetchImpl(url, {
+        method: 'HEAD',
+        signal: AbortSignal.timeout(Math.min(5_000, timeoutMs)),
+      });
+      const size = Number(response.headers.get('content-length'));
+      if (response.ok && size === Number(expectedSize)) return response;
+      lastError = new Error(`HTTP ${response.status}, Content-Length=${response.headers.get('content-length')}`);
+    } catch (error) {
+      lastError = error;
+    }
+    await sleep(intervalMs);
+  }
+  throw new Error(`Quick Tunnel 公网 HEAD 在等待窗口内未就绪: ${lastError?.message || 'unknown'}`);
+}
+
+/**
  * 启动一个一次性 Quick Tunnel。
  *
  * @param {{

@@ -7,6 +7,7 @@ import {
   assertSafeQuickTunnelOrigin,
   createQuickTunnel,
   parseTryCloudflareUrl,
+  waitForPublicFileHead,
 } from '../src/cloudflare-quick-tunnel.mjs';
 
 test('parseTryCloudflareUrl 只提取 trycloudflare HTTPS 地址', () => {
@@ -59,4 +60,24 @@ test('createQuickTunnel 固定关闭自动更新并可从 stderr 拿 URL', async
   ]);
   assert.equal(calls[0].options.windowsHide, true);
   await tunnel.close();
+});
+
+test('公网 HEAD ready gate 会容忍 Quick Tunnel URL 刚分配时的短暂失败', async () => {
+  let attempts = 0;
+  const response = await waitForPublicFileHead({
+    url: 'https://route-b-smoke.trycloudflare.com/file/token/x.bin',
+    expectedSize: 1024,
+    timeoutMs: 2_000,
+    intervalMs: 1,
+    fetchImpl: async () => {
+      attempts += 1;
+      if (attempts < 3) throw new Error('connector not ready');
+      return new Response(null, {
+        status: 200,
+        headers: { 'Content-Length': '1024' },
+      });
+    },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(attempts, 3);
 });
