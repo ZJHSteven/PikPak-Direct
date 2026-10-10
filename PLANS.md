@@ -43,7 +43,7 @@
 - [x] chunk 先 Brotli-or-none 压缩，再 AES-256-GCM 加密并聚合进不可变 pack；pack 尾部加密 TOC 可单独扫描，已实现无需本地数据库的全局 chunk index 重建，并对损坏 pack 做局部隔离。
 - [x] snapshot manifest 已记录目录树、文件元数据、whole-file SHA-256 与有序 chunk 引用，整体 AEAD 加密；本地 latest.json 只是便利指针，fresh restore 可直接解密枚举所有 snapshot，不依赖它。
 - [x] 离线 fresh-machine 恢复链已实现：不依赖 SQLite/cache，只凭 repo 对象 + password/recovery key 重建 pack index、逐 chunk AEAD/hash 校验并原子恢复文件。下一步把这些对象同步/枚举到 PikPak 固定仓库根目录。
-- [ ] CLI 增加 init-repo / backup / list-snapshots / restore / verify-repo 等最小可用命令，并补离线 round-trip、去重、增量、损坏检测、错误密码/恢复密钥边界测试。
+- [x] CLI 已增加 `repo-init / repo-backup / repo-list / repo-restore / repo-verify`；凭据只从环境/Secret 注入，不允许 password/recovery key 进入 argv。`repo-init` 强制把 recovery key 写到 repo-dir 外的独立文件且不回显。库级 round-trip、去重、增量、损坏隔离与错误凭据测试已覆盖；下一步跑真实 CLI 进程 smoke 并接 PikPak 远端仓库同步。
 
 ## 2026-10-10：手机冷备实战 / 0 字节文件边界修复
 

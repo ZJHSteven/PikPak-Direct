@@ -747,6 +747,166 @@ async function verifyLocalCommand(args) {
   if (!result.ok) process.exitCode = 4;
 }
 
+/**
+ * 创建加密仓库。
+ *
+ * recovery key 的处理顺序故意是“先写独立文件，再提交 repo header”：
+ * - recovery key 永远不打印到 stdout/stderr；
+ * - 如果独立文件无法创建，仓库根本不会初始化；
+ * - 如果初始化在 repo.json 原子提交前失败，则删除刚写出的 recovery 文件，避免留下
+ *   一个看似有效、实际没有对应仓库的孤儿恢复凭据。
+ */
+async function repoInitCommand(args) {
+  const repoDir = resolve(args.repoDir);
+  const recoveryKeyOut = resolve(args.recoveryKeyOut);
+  if (pathIsInside(repoDir, recoveryKeyOut)) {
+    throw new Error('--recovery-key-out 必须位于 repo-dir 之外，避免恢复密钥随仓库一起上传。');
+  }
+
+  const password = process.env.PIKPAK_REPO_PASSWORD || '';
+  if (!password) {
+    throw new Error('repo-init 需要环境变量 PIKPAK_REPO_PASSWORD；不会接受 --password 明文参数。');
+  }
+
+  await mkdir(dirname(recoveryKeyOut), { recursive: true });
+  const generated = generateRecoveryKey();
+  const recoveryKey = generated.text;
+  generated.raw.fill(0);
+
+  let recoveryHandle = null;
+  let recoveryFileCommitted = false;
+  try {
+    // wx：绝不覆盖已有 recovery 文件。0o600 在 POSIX 生效；Windows 上仍由当前用户 ACL
+    // 与所在目录 ACL 控制，但至少不会因为默认 mode 主动放宽权限。
+    recoveryHandle = await open(recoveryKeyOut, 'wx', 0o600);
+    await recoveryHandle.writeFile(`${recoveryKey}\n`, 'utf8');
+    await recoveryHandle.sync();
+    await recoveryHandle.close();
+    recoveryHandle = null;
+    recoveryFileCommitted = true;
+
+    const initialized = await initializeRepository(repoDir, {
+      password,
+      recoveryKey,
+      ...(args.packTargetMiB === null
+        ? {}
+        : { packTargetBytes: Math.round(args.packTargetMiB * 1024 * 1024) }),
+    });
+    initialized.masterKey.fill(0);
+
+    console.log('repo-init: OK');
+    console.log(JSON.stringify({
+      repoDir: initialized.repoDir,
+      repoId: initialized.header.repoId,
+      formatVersion: initialized.header.formatVersion,
+      recoveryKeyFile: recoveryKeyOut,
+      packTargetBytes: initialized.header.pack.targetBytes,
+    }, null, 2));
+    console.log('recovery key 已写入独立文件；CLI 不会回显其内容，也不会自动上传该文件。');
+  } catch (error) {
+    if (recoveryHandle) await recoveryHandle.close().catch(() => {});
+    if (recoveryFileCommitted) await rm(recoveryKeyOut, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+function requireRepositoryCredentials() {
+  const credentials = repositoryCredentialsFromEnv();
+  if (!credentials.password && !credentials.recoveryKey) {
+    throw new Error(
+      '需要 PIKPAK_REPO_PASSWORD 或 PIKPAK_REPO_RECOVERY_KEY 环境变量；'
+      + '不会接受命令行明文凭据。',
+    );
+  }
+  return credentials;
+}
+
+async function repoBackupCommand(args) {
+  const credentials = requireRepositoryCredentials();
+  const started = Date.now();
+  const result = await backupRepository({
+    repoDir: resolve(args.repoDir),
+    sourcePath: resolve(args.repoSourcePath),
+    ...credentials,
+  });
+
+  console.log('repo-backup: OK');
+  console.log(JSON.stringify({
+    repoDir: result.repoDir,
+    snapshotId: result.snapshotId,
+    files: result.stats.files,
+    directories: result.stats.directories,
+    logicalBytes: result.stats.logicalBytes,
+    totalChunkRefs: result.stats.totalChunkRefs,
+    reusedChunkRefs: result.stats.reusedChunkRefs,
+    newChunks: result.stats.newChunks,
+    newPlainBytes: result.stats.newPlainBytes,
+    packsCreated: result.stats.packsCreated,
+    elapsedMs: Date.now() - started,
+  }, null, 2));
+}
+
+async function repoListCommand(args) {
+  const credentials = requireRepositoryCredentials();
+  const result = await listRepositorySnapshots({
+    repoDir: resolve(args.repoDir),
+    ...credentials,
+  });
+
+  console.log(`repo-list: snapshots=${result.snapshots.length}, errors=${result.errors.length}`);
+  console.table(result.snapshots.map((snapshot) => ({
+    snapshotId: snapshot.snapshotId,
+    createdAt: snapshot.createdAt,
+    sourceType: snapshot.source?.type || '',
+    sourceName: snapshot.source?.name || '',
+    files: snapshot.stats?.files ?? '',
+    logicalBytes: snapshot.stats?.logicalBytes ?? '',
+    newChunks: snapshot.stats?.newChunks ?? '',
+    reusedChunkRefs: snapshot.stats?.reusedChunkRefs ?? '',
+  })));
+  if (result.errors.length > 0) {
+    console.error('以下 snapshot 无法解密/读取：');
+    console.table(result.errors);
+    process.exitCode = 5;
+  }
+}
+
+async function repoRestoreCommand(args) {
+  const credentials = requireRepositoryCredentials();
+  const result = await restoreRepositorySnapshot({
+    repoDir: resolve(args.repoDir),
+    destinationDir: resolve(args.repoDestinationDir),
+    snapshotId: args.snapshotId,
+    overwrite: args.overwrite,
+    ...credentials,
+  });
+
+  const failed = result.files.filter((item) => !item.ok);
+  console.log(`repo-restore: ${result.ok ? 'OK' : 'FAILED'}`);
+  console.log(JSON.stringify({
+    snapshotId: result.snapshotId,
+    destination: result.destination,
+    files: result.files.length,
+    failedFiles: failed.length,
+    damagedPacks: result.packErrors.length,
+  }, null, 2));
+  if (failed.length > 0) console.table(failed);
+  if (result.packErrors.length > 0) console.table(result.packErrors);
+  if (!result.ok) process.exitCode = 6;
+}
+
+async function repoVerifyCommand(args) {
+  const credentials = requireRepositoryCredentials();
+  const result = await verifyRepository({
+    repoDir: resolve(args.repoDir),
+    full: !args.quick,
+    ...credentials,
+  });
+  console.log(`repo-verify: ${result.ok ? 'OK' : 'FAILED'}${args.quick ? ' (quick)' : ' (full)'}`);
+  console.log(JSON.stringify(result, null, 2));
+  if (!result.ok) process.exitCode = 7;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
@@ -766,6 +926,16 @@ async function main() {
     await inspectManifestCommand(args);
   } else if (args.command === 'verify-local') {
     await verifyLocalCommand(args);
+  } else if (args.command === 'repo-init') {
+    await repoInitCommand(args);
+  } else if (args.command === 'repo-backup') {
+    await repoBackupCommand(args);
+  } else if (args.command === 'repo-list') {
+    await repoListCommand(args);
+  } else if (args.command === 'repo-restore') {
+    await repoRestoreCommand(args);
+  } else if (args.command === 'repo-verify') {
+    await repoVerifyCommand(args);
   }
 }
 
