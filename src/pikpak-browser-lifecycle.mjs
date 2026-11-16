@@ -9,10 +9,12 @@
 // 上传正文仍然完全由 Node -> Aliyun OSS 完成，绝不会经过这里。
 
 import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import { open, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
+import { promisify } from 'node:util';
 
 export const PIKPAK_MANAGED_WINDOW_NAME = 'pikpak-direct:managed-control-plane:v1';
 export const PIKPAK_DRIVE_URL = 'https://mypikpak.com/drive/';
@@ -20,6 +22,7 @@ export const PIKPAK_DRIVE_URL = 'https://mypikpak.com/drive/';
 const DEFAULT_CDP_URL = 'http://127.0.0.1:9222';
 const LEASE_STATE_PATH = join(tmpdir(), 'pikpak-direct-browser-lease.json');
 const LEASE_LOCK_PATH = `${LEASE_STATE_PATH}.lock`;
+const execFileAsync = promisify(execFile);
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -208,6 +211,23 @@ async function closeManagedTarget(cdpUrl, targetId) {
 }
 
 async function ensureCdpAvailable({ cdpUrl }) {
+  // 固定 9222 的端口「有响应」不代表就是原来已登录的那一个 Chrome：
+  // 忘记给 --user-data-dir 中的 User Data 加引号，会生成另一个 User 目录；
+  // Windows 还可能让新旧 Chrome 分别监听 IPv4 / IPv6 的 9222。
+  // 在创建任何受管标签页之前先核验实际 PID 与完整 Profile；绝不接管错误实例。
+  if (process.platform === 'win32' && cdpUrl.replace(/\/$/, '') === DEFAULT_CDP_URL) {
+    const identityScript = 'D:\\Workspace\\browser-harness-js\\sdk\\ensure-daily-chrome.ps1';
+    try {
+      await execFileAsync('pwsh.exe', ['-NoProfile', '-File', identityScript, '-CheckOnly'], {
+        windowsHide: true,
+        timeout: 15_000,
+      });
+    } catch (cause) {
+      const error = new Error(`CDP_IDENTITY_INVALID: 日常 Chrome 9222 不满足唯一正确 Profile 的条件：${cause.message}`);
+      error.code = 'CDP_IDENTITY_INVALID';
+      throw error;
+    }
+  }
   try {
     await fetchJson(`${cdpUrl.replace(/\/$/, '')}/json/version`, 1_000);
     return;
