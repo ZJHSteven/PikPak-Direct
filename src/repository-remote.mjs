@@ -29,7 +29,9 @@ import { uploadFileToPikPakOss } from './oss-uploader.mjs';
 import { PikPakWebSession } from './pikpak-web-session.mjs';
 import { discoverAliyunRegion } from './region-discovery.mjs';
 
-export const DEFAULT_REMOTE_REPOSITORY_FOLDER = 'PikPak-Direct Vault';
+// 新仓库一律落在用户指定的冷备区；历史单层目录单独保留，供旧仓库明确选择。
+export const DEFAULT_REMOTE_REPOSITORY_FOLDER = 'PikPak冷备/加密仓库/默认仓库';
+export const LEGACY_REMOTE_REPOSITORY_FOLDER = 'PikPak-Direct Vault';
 
 const PACK_REMOTE_RE = /^pack-([a-f0-9]{32})\.ppdp$/i;
 const SNAPSHOT_REMOTE_RE = /^snapshot-([a-f0-9]{32})\.ppds$/i;
@@ -58,7 +60,7 @@ export async function listAllPikPakFiles(web, parentId = '', { maxPages = 10_000
  * 精确同名 active folder 只能有一个，多于一个直接报错，避免把对象分散进多个“同名根”。
  */
 export async function resolveRemoteRepositoryRoot(web, {
-  folderName = DEFAULT_REMOTE_REPOSITORY_FOLDER,
+  folderName = LEGACY_REMOTE_REPOSITORY_FOLDER,
   create = false,
 } = {}) {
   if (!String(folderName || '').trim()) throw new Error('远端仓库根目录名称不能为空。');
@@ -81,6 +83,106 @@ export async function resolveRemoteRepositoryRoot(web, {
     throw new Error('PikPak 创建仓库根目录后返回异常。');
   }
   return created;
+}
+
+/**
+ * 依次查找或创建用户指定的多级仓库目录。
+ *
+ * 单层旧名称继续调用原有解析器，保持旧版 Vault 的读取兼容性。
+ * 多层目录逐层根据 parentId 枚举，遇到重名或文件冒充目录立即拒绝；
+ * 不依赖通过路径字符串猜测 PikPak 内部 fileId。
+ */
+export async function resolveRemoteRepositoryRootPath(web, {
+  folderName = DEFAULT_REMOTE_REPOSITORY_FOLDER,
+  create = false,
+} = {}) {
+  const path = String(folderName || '');
+  if (!path.trim() || path.startsWith('/') || path.endsWith('/') || path.includes('\\')) {
+    throw new Error('PikPak 冷备目录路径无效。');
+  }
+  const parts = path.split('/');
+  if (parts.some((part) => !part.trim() || part === '.' || part === '..')) {
+    throw new Error('PikPak 冷备目录含空层级或相对路径。');
+  }
+  if (parts.length === 1) return resolveRemoteRepositoryRoot(web, { folderName: path, create });
+
+  let parentId = '';
+  let chosen = null;
+  for (const name of parts) {
+    const siblings = await listAllPikPakFiles(web, parentId);
+    const matches = siblings.filter((file) => file.name === name && !file.trashed);
+    if (matches.length > 1 || matches.some((file) => file.kind !== 'drive#folder')) {
+      throw new Error('PikPak 冷备路径存在重名或非目录冲突: ' + name);
+    }
+    if (matches.length === 1) {
+      chosen = matches[0];
+    } else {
+      if (!create) throw new Error('PikPak 冷备路径不存在: ' + path);
+      chosen = await web.createFolder({ name, parentId });
+      if (!chosen.id || chosen.kind !== 'drive#folder') {
+        throw new Error('PikPak 冷备文件夹创建结果无效: ' + name);
+      }
+    }
+    parentId = chosen.id;
+  }
+  return chosen;
+}
+
+/**
+ * 给远端对象选择真实存放目录，同时向内部恢复逻辑提供统一的逻辑对象名。
+ *
+ * 历史单层 Vault 仍使用 pack-xxx.ppdp / snapshot-xxx.ppds。
+ * 新多级布局使用 packs/xxx.ppdp、snapshots/xxx.ppds；
+ * 内部把这两者映射回同一个逻辑名，恢复时仍按原有 repo v1 加密格式操作。
+ */
+export async function resolveRepositoryObjectLayout(web, root, {
+  nested = false,
+  create = false,
+} = {}) {
+  const rootFiles = await listAllPikPakFiles(web, root.id);
+  if (!nested) {
+    return {
+      nested: false,
+      remoteFiles: rootFiles,
+      folderByKind: { header: root.id, pack: root.id, snapshot: root.id },
+    };
+  }
+
+  const folders = {};
+  for (const name of ['packs', 'snapshots']) {
+    const matches = rootFiles.filter((file) => file.name === name && !file.trashed);
+    if (matches.length > 1 || matches.some((file) => file.kind !== 'drive#folder')) {
+      throw new Error('PikPak 加密仓库对象目录冲突: ' + name);
+    }
+    if (matches.length === 1) {
+      folders[name] = matches[0];
+    } else {
+      if (!create) throw new Error('PikPak 加密仓库缺失对象目录: ' + name);
+      const created = await web.createFolder({ name, parentId: root.id });
+      if (!created.id || created.kind !== 'drive#folder') {
+        throw new Error('PikPak 加密仓库对象目录创建失败: ' + name);
+      }
+      folders[name] = created;
+    }
+  }
+
+  const [packs, snapshots] = await Promise.all([
+    listAllPikPakFiles(web, folders.packs.id),
+    listAllPikPakFiles(web, folders.snapshots.id),
+  ]);
+  return {
+    nested: true,
+    remoteFiles: [
+      ...rootFiles.filter((file) => file.kind !== 'drive#folder'),
+      ...packs.map((file) => ({ ...file, name: 'pack-' + file.name })),
+      ...snapshots.map((file) => ({ ...file, name: 'snapshot-' + file.name })),
+    ],
+    folderByKind: {
+      header: root.id,
+      pack: folders.packs.id,
+      snapshot: folders.snapshots.id,
+    },
+  };
 }
 
 /**
@@ -284,9 +386,12 @@ export async function pushRepositoryToPikPak({
   let resolvedRegion = region;
 
   try {
-    const root = await resolveRemoteRepositoryRoot(web, { folderName: remoteFolderName, create: true });
-    const remoteFiles = await listAllPikPakFiles(web, root.id);
-    const remote = indexRemoteRepositoryFiles(remoteFiles);
+    const root = await resolveRemoteRepositoryRootPath(web, { folderName: remoteFolderName, create: true });
+    const layout = await resolveRepositoryObjectLayout(web, root, {
+      nested: remoteFolderName.includes('/'),
+      create: true,
+    });
+    const remote = indexRemoteRepositoryFiles(layout.remoteFiles);
     const result = { root, uploaded: [], skipped: [] };
 
     for (const artifact of artifacts) {
@@ -313,7 +418,11 @@ export async function pushRepositoryToPikPak({
       }
 
       onEvent({ type: 'upload-start', artifact });
-      const uploaded = await uploadRepositoryArtifact(web, artifact, root.id, {
+      // 新布局的物理名称仅为随机 pack/snapshot ID；旧目录保留原命名协议。
+      const uploadArtifact = layout.nested && artifact.kind !== 'header'
+        ? { ...artifact, remoteName: artifact.remoteName.replace(/^(pack|snapshot)-/, '') }
+        : artifact;
+      const uploaded = await uploadRepositoryArtifact(web, uploadArtifact, layout.folderByKind[artifact.kind], {
         region: resolvedRegion,
         route,
         parallel,
@@ -345,8 +454,12 @@ export async function pullRepositoryFromPikPak({
   const rootPath = resolve(repoDir);
   const web = await PikPakWebSession.connect({ cdpUrl });
   try {
-    const root = await resolveRemoteRepositoryRoot(web, { folderName: remoteFolderName, create: false });
-    const remoteFiles = await listAllPikPakFiles(web, root.id);
+    const root = await resolveRemoteRepositoryRootPath(web, { folderName: remoteFolderName, create: false });
+    const layout = await resolveRepositoryObjectLayout(web, root, {
+      nested: remoteFolderName.includes('/'),
+      create: false,
+    });
+    const remoteFiles = layout.remoteFiles;
     const remote = indexRemoteRepositoryFiles(remoteFiles);
     if (!remote.has('repo.json')) throw new Error('远端仓库缺少 repo.json。');
 
