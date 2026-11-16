@@ -8,6 +8,8 @@ import {
   collectRepositoryArtifacts,
   listAllPikPakFiles,
   remoteArtifactToLocalRelativePath,
+  resolveRemoteRepositoryRootPath,
+  resolveRepositoryObjectLayout,
   resolveRemoteRepositoryRoot,
 } from '../src/repository-remote.mjs';
 
@@ -89,4 +91,67 @@ test('仓库根目录精确复用，缺失时只创建一次，重复同名时�
     }),
   };
   await assert.rejects(resolveRemoteRepositoryRoot(duplicateWeb), /同名仓库文件夹/);
+});
+
+test('PikPak冷备三级目录按 parentId 创建，禁止相对路径及重名', async () => {
+  const content = new Map([['', []]]);
+  let serial = 0;
+  const web = {
+    listFiles: async ({ parentId }) => ({
+      files: content.get(parentId) || [],
+      nextPageToken: '',
+    }),
+    createFolder: async ({ parentId, name }) => {
+      const folder = { id: 'dir-' + ++serial, name, kind: 'drive#folder', trashed: false };
+      content.get(parentId).push(folder);
+      content.set(folder.id, []);
+      return folder;
+    },
+  };
+  const path = 'PikPak冷备/加密仓库/oldcourse-20261018';
+  const root = await resolveRemoteRepositoryRootPath(web, { folderName: path, create: true });
+  assert.equal(serial, 3);
+  assert.equal(root.name, 'oldcourse-20261018');
+  assert.equal((await resolveRemoteRepositoryRootPath(web, { folderName: path })).id, root.id);
+  assert.equal(serial, 3);
+  await assert.rejects(resolveRemoteRepositoryRootPath(web, {
+    folderName: 'PikPak冷备/../别人的目录', create: true,
+  }), /相对路径/);
+  await assert.rejects(resolveRemoteRepositoryRootPath(web, {
+    folderName: '/PikPak冷备/加密仓库', create: true,
+  }), /路径无效/);
+  content.get(root.id).push({ id: 'bad', name: 'packs', kind: 'drive#file', trashed: false });
+  await assert.rejects(resolveRepositoryObjectLayout(web, root, { nested: true, create: true }), /目录冲突/);
+});
+
+test('新云端仓库将 pack 和 snapshot 放进独立目录并兼容旧版逻辑对象名', async () => {
+  const objects = new Map([
+    ['root-id', [
+      { id: 'head', name: 'repo.json', kind: 'drive#file', size: 1419, trashed: false },
+      { id: 'pack-dir', name: 'packs', kind: 'drive#folder', trashed: false },
+      { id: 'snapshot-dir', name: 'snapshots', kind: 'drive#folder', trashed: false },
+    ]],
+    ['pack-dir', [
+      { id: 'pack1', name: '00112233445566778899aabbccddeeff.ppdp', kind: 'drive#file', trashed: false },
+    ]],
+    ['snapshot-dir', [
+      { id: 'snap1', name: 'ffeeddccbbaa99887766554433221100.ppds', kind: 'drive#file', trashed: false },
+    ]],
+  ]);
+  const web = {
+    listFiles: async ({ parentId }) => ({ files: objects.get(parentId) || [], nextPageToken: '' }),
+    createFolder: async () => { throw new Error('已有目录不应重复创建'); },
+  };
+  const root = { id: 'root-id', name: 'oldcourse-20261018', kind: 'drive#folder' };
+  const layout = await resolveRepositoryObjectLayout(web, root, { nested: true });
+  assert.deepEqual(layout.folderByKind, {
+    header: 'root-id', pack: 'pack-dir', snapshot: 'snapshot-dir',
+  });
+  assert.deepEqual(layout.remoteFiles.map((x) => x.name), [
+    'repo.json',
+    'pack-00112233445566778899aabbccddeeff.ppdp',
+    'snapshot-ffeeddccbbaa99887766554433221100.ppds',
+  ]);
+  const flat = await resolveRepositoryObjectLayout(web, root, { nested: false });
+  assert.equal(flat.folderByKind.pack, 'root-id');
 });
